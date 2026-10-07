@@ -1,0 +1,647 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* enable dark-variant & class-based theming */
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   Pargar design system — soft pastel, a touch of glass,
+   calm shadows, gentle motion.
+   ============================================================ */
+:root {
+  --background: #f4f5fb;
+  --foreground: #2a2745;
+  --card: #ffffff;
+  --card-foreground: #2a2745;
+  --popover: #ffffff;
+  --popover-foreground: #2a2745;
+  --primary: #6d63f0;
+  --primary-foreground: #ffffff;
+  --secondary: #5a6380;
+  --secondary-foreground: #ffffff;
+  --muted: #edeef7;
+  --muted-foreground: #6b6c8a;
+  --accent: #ec6fa9;
+  --accent-foreground: #ffffff;
+  --destructive: #e05c70;
+  --destructive-foreground: #ffffff;
+  --success: #3ec98a;
+  --success-foreground: #ffffff;
+  --gold: #f2a437;
+  --gold-foreground: #3f2a04;
+  --border: #d9dbe9;
+  --input: #c9cbdf;
+  --ring: #6d63f0;
+  --radius: 0.5rem;
+  /* inverted editorial band (dark in light mode, light in dark mode) */
+  --invert-bg: #211f3e;
+  --invert-fg: #f6f5fb;
+  /* soft motion tokens */
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-soft-in-out: cubic-bezier(0.45, 0.05, 0.25, 1);
+  --dur-fast: 280ms;
+  --dur-med: 420ms;
+  --dur-slow: 700ms;
+}
+
+.dark {
+  --background: #12111d;
+  --foreground: #ecebf6;
+  --card: #191830;
+  --card-foreground: #ecebf6;
+  --popover: #201f3a;
+  --popover-foreground: #ecebf6;
+  --primary: #9189fb;
+  --primary-foreground: #161129;
+  --secondary: #8d95ab;
+  --secondary-foreground: #10131e;
+  --muted: #262442;
+  --muted-foreground: #a7a8c9;
+  --accent: #f095c4;
+  --accent-foreground: #2a0f1f;
+  --destructive: #f47b8c;
+  --destructive-foreground: #2a0a0f;
+  --success: #63e0a5;
+  --success-foreground: #06210f;
+  --gold: #fab653;
+  --gold-foreground: #2a1a02;
+  --border: #353360;
+  --input: #4d4a7e;
+  --ring: #9189fb;
+  --radius: 0.25rem;
+  --invert-bg: #f0eff8;
+  --invert-fg: #18162e;
+}
+
+@theme inline {
+  /* next/font: FD default + plain Latin face for English-only fields */
+  /* Prefer Apple Color Emoji first; chat also renders Apple PNGs for Linux hosts. */
+  --font-sans: var(--font-vazirmatn), "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
+    sans-serif;
+  --font-emoji: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  --font-latin: var(--font-vazirmatn-latin), var(--font-vazirmatn), Tahoma, "Segoe UI", Arial,
+    sans-serif;
+  /* Technical / English strings keep Latin digits */
+  --font-mono: var(--font-vazirmatn-latin), ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
+    Consolas, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-gold: var(--gold);
+  --color-gold-foreground: var(--gold-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 20px;
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --default-transition-duration: 350ms;
+  --default-transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    color-scheme: light;
+    scroll-behavior: smooth;
+    font-family: var(--font-sans);
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    background-color: var(--background);
+    background-image:
+      radial-gradient(1100px 540px at 85% -8%, color-mix(in srgb, var(--color-accent) 11%, transparent), transparent 62%),
+      radial-gradient(1000px 520px at -8% 26%, color-mix(in srgb, var(--color-primary) 9%, transparent), transparent 60%),
+      radial-gradient(800px 420px at 50% 110%, color-mix(in srgb, var(--color-gold) 7%, transparent), transparent 60%);
+    background-attachment: fixed;
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /*
+   * Form controls: UA + Tailwind preflight use `font: inherit`, which is flaky.
+   * Pin family so Vazirmatn FD (Persian digits) paints the same as surrounding UI.
+   */
+  input,
+  textarea,
+  select,
+  button {
+    font-family: var(--font-sans) !important;
+    font-feature-settings: normal !important;
+  }
+  input::placeholder,
+  textarea::placeholder,
+  input::-webkit-input-placeholder,
+  textarea::-webkit-input-placeholder {
+    font-family: var(--font-sans) !important;
+    font-feature-settings: normal !important;
+  }
+  /*
+   * English-only typing surfaces: passwords, usernames, email, captcha, URLs, codes.
+   * Use plain Vazirmatn (non-FD) so Latin digits stay Latin.
+   */
+  .font-latin,
+  input.font-latin,
+  textarea.font-latin,
+  input[type="password"],
+  input[type="email"],
+  input[type="url"],
+  input[type="tel"],
+  input[dir="ltr"],
+  textarea[dir="ltr"],
+  input[autocomplete="username"],
+  input[autocomplete="email"],
+  input[autocomplete="current-password"],
+  input[autocomplete="new-password"],
+  input[autocomplete="one-time-code"],
+  input[id*="captcha" i],
+  input[name*="captcha" i],
+  input[id*="password" i],
+  input[name*="password" i],
+  input[id*="username" i],
+  input[name*="username" i] {
+    font-family: var(--font-latin) !important;
+    font-feature-settings: normal !important;
+    font-variant-numeric: lining-nums !important;
+  }
+  .font-latin::placeholder,
+  input.font-latin::placeholder,
+  textarea.font-latin::placeholder,
+  input[type="password"]::placeholder,
+  input[type="email"]::placeholder,
+  input[type="url"]::placeholder,
+  input[type="tel"]::placeholder,
+  input[dir="ltr"]::placeholder,
+  textarea[dir="ltr"]::placeholder {
+    font-family: var(--font-latin) !important;
+  }
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    font-family: var(--font-sans) !important;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-primary) 22%, transparent);
+    color: inherit;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-muted-foreground) 30%, transparent);
+    border-radius: 999px;
+    border: 2px solid var(--color-background);
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .chat-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent) transparent;
+  }
+  .chat-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+  .chat-scroll::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent);
+    border-radius: 999px;
+    border-width: 0;
+  }
+  .section-kicker {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    color: var(--color-primary);
+  }
+  .section-kicker::before {
+    content: "";
+    display: inline-block;
+    width: 1.75rem;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--color-primary);
+  }
+  /* kicker sitting on a solid primary panel — bar & text follow the opposing tone */
+  .section-kicker.on-primary {
+    color: var(--color-primary-foreground);
+  }
+  .section-kicker.on-primary::before {
+    background: var(--color-primary-foreground);
+  }
+  .card-hover {
+    transition:
+      border-color 150ms ease,
+      box-shadow 250ms ease,
+      transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .card-hover:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+    box-shadow:
+      0 2px 6px rgba(41, 39, 70, 0.05),
+      0 22px 44px -18px rgba(75, 66, 200, 0.22);
+    transform: translateY(-3px);
+  }
+  .dark .card-hover:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 60%, transparent);
+    box-shadow:
+      0 2px 10px rgba(0, 0, 0, 0.4),
+      0 22px 44px -18px color-mix(in srgb, var(--color-primary) 40%, transparent);
+  }
+  .shadow-soft {
+    box-shadow:
+      0 2px 6px rgba(41, 39, 70, 0.05),
+      0 20px 44px -22px rgba(41, 39, 70, 0.2);
+  }
+  .dark .shadow-soft {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 22px 48px -22px rgba(0, 0, 0, 0.55);
+  }
+  /* signature offset shadow — softened for the pastel identity */
+  .shadow-offset {
+    box-shadow: 5px 5px 0 0 var(--invert-fg);
+  }
+  .shadow-offset-sm {
+    box-shadow: 4px 4px 0 0 var(--invert-fg);
+  }
+  /* in dark mode the offset shadow must stay visible against the dark canvas */
+  .dark .shadow-offset {
+    box-shadow: 5px 5px 0 0 rgba(255, 255, 255, 0.16);
+  }
+  .dark .shadow-offset-sm {
+    box-shadow: 4px 4px 0 0 rgba(255, 255, 255, 0.14);
+  }
+  /* inverted editorial band */
+  .band-invert {
+    background:
+      radial-gradient(900px 400px at 90% -20%, color-mix(in srgb, var(--color-accent) 26%, transparent), transparent 60%),
+      var(--invert-bg);
+    color: var(--invert-fg);
+  }
+  .chip-outline {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 2px solid currentColor;
+    border-radius: 999px;
+    padding: 0.35rem 0.8rem;
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+  .dot-grid {
+    background-image: radial-gradient(
+      color-mix(in srgb, currentColor 16%, transparent) 1px,
+      transparent 1px
+    );
+    background-size: 18px 18px;
+  }
+  .dot-grid-primary {
+    color: var(--color-primary);
+  }
+
+  /* frosted glass — a touch: soft, restrained */
+  .glass {
+    background: linear-gradient(150deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.28));
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    backdrop-filter: blur(14px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.6),
+      0 16px 36px -22px rgba(41, 39, 70, 0.3);
+  }
+  .dark .glass {
+    background: linear-gradient(150deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.09),
+      0 16px 36px -22px rgba(0, 0, 0, 0.6);
+  }
+
+  /* frosted glow variants per status (colored ambience) */
+  .glass-glow-primary,
+  .glass-glow-accent,
+  .glass-glow-gold,
+  .glass-glow-success,
+  .glass-glow-neutral {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 14px 34px -12px rgba(41, 39, 70, 0.3);
+  }
+  .glass-glow-primary {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 14px 34px -12px color-mix(in srgb, var(--color-primary) 42%, transparent);
+  }
+  .glass-glow-accent {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 14px 34px -12px color-mix(in srgb, var(--color-accent) 40%, transparent);
+  }
+  .glass-glow-gold {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 14px 34px -12px color-mix(in srgb, var(--color-gold) 40%, transparent);
+  }
+  .glass-glow-success {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 14px 34px -12px color-mix(in srgb, var(--color-success) 40%, transparent);
+  }
+
+  /* glass navigation bar */
+  .nav-glass {
+    background: color-mix(in srgb, var(--color-background) 82%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    backdrop-filter: blur(16px) saturate(1.5);
+  }
+}
+
+@layer utilities {
+  /* legacy aliases now render soft + calm */
+  .bg-gradient-brand {
+    background-color: var(--color-primary);
+    background-image: none;
+  }
+  .text-gradient-brand {
+    color: var(--color-primary);
+    -webkit-background-clip: initial;
+    background-clip: initial;
+  }
+  .shadow-glow,
+  .shadow-glow-cyan {
+    box-shadow: none;
+  }
+
+  /* ---------- motion system (soft by default) ---------- */
+  .reveal {
+    opacity: 0;
+    animation: fadeUp 0.85s var(--ease-soft) forwards;
+  }
+  .reveal-1 { animation-delay: 0.08s; }
+  .reveal-2 { animation-delay: 0.16s; }
+  .reveal-3 { animation-delay: 0.24s; }
+  .reveal-4 { animation-delay: 0.32s; }
+  .reveal-5 { animation-delay: 0.4s; }
+  .reveal-scale {
+    opacity: 0;
+    animation: scaleIn 0.7s var(--ease-soft) forwards;
+  }
+  .hover-lift {
+    transition:
+      transform var(--dur-med) var(--ease-soft),
+      box-shadow var(--dur-med) var(--ease-soft);
+  }
+  .hover-lift:hover {
+    transform: translateY(-3px);
+    box-shadow:
+      0 2px 6px rgba(41, 39, 70, 0.05),
+      0 20px 40px -18px color-mix(in srgb, var(--color-primary) 26%, transparent);
+  }
+  .dark .hover-lift:hover {
+    box-shadow:
+      0 2px 10px rgba(0, 0, 0, 0.35),
+      0 20px 40px -18px color-mix(in srgb, var(--color-primary) 32%, transparent);
+  }
+  .press {
+    transition: transform var(--dur-fast) var(--ease-soft);
+  }
+  .press:active {
+    transform: translateY(1px) scale(0.985);
+  }
+  .press-flat:active {
+    transform: translateY(0.5px) scale(0.99);
+  }
+  .float-slow {
+    animation: floatY 9s var(--ease-soft-in-out) infinite;
+  }
+  .animate-pulse-soft {
+    animation: pulseSoft 3s var(--ease-soft-in-out) infinite;
+  }
+
+  /* Soften common Tailwind transition utilities */
+  .transition,
+  .transition-all,
+  .transition-colors,
+  .transition-opacity,
+  .transition-shadow,
+  .transition-transform {
+    transition-timing-function: var(--ease-soft);
+  }
+  .duration-75 { transition-duration: 180ms; }
+  .duration-100 { transition-duration: 220ms; }
+  .duration-150 { transition-duration: 280ms; }
+  .duration-200 { transition-duration: 350ms; }
+  .duration-300 { transition-duration: 420ms; }
+  .ease-out { transition-timing-function: var(--ease-soft); }
+  .ease-in-out { transition-timing-function: var(--ease-soft-in-out); }
+
+  /* Soften snappy active scales */
+  .active\:scale-90:active {
+    transform: scale(0.96);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal,
+    .reveal-scale {
+      opacity: 1;
+      animation: none;
+    }
+    .float-slow,
+    .hover-lift,
+    .press,
+    .animate-pulse-soft,
+    .chat-msg-glow {
+      transition: none;
+      animation: none;
+    }
+  }
+}
+
+/* keyframes live at root so they always exist regardless of layers */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes floatY {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+@keyframes pulseSoft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes chatMsgGlow {
+  0% {
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  35% {
+    filter: drop-shadow(0 0 12px color-mix(in srgb, var(--color-gold) 55%, transparent))
+      drop-shadow(0 0 28px color-mix(in srgb, var(--color-gold) 28%, transparent));
+  }
+  100% {
+    filter: drop-shadow(0 0 0 transparent);
+  }
+}
+
+.chat-msg-glow {
+  animation: chatMsgGlow 1.85s var(--ease-soft) forwards;
+  will-change: filter;
+}
+
+@keyframes metaprog {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
+}
+
+/* Soften Tailwind ping / pulse defaults for this app */
+@keyframes softPing {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  75%,
+  100% {
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}
+.animate-ping {
+  animation: softPing 1.6s var(--ease-soft-in-out) infinite;
+}
+
+@keyframes softPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+.animate-pulse {
+  animation: softPulse 2.8s var(--ease-soft-in-out) infinite;
+}
+
+/* ---- skeleton shimmer ------------------------------------------------ */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--color-muted);
+  border-radius: 0.75rem;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-foreground) 8%, transparent),
+    transparent
+  );
+  animation: skeletonShimmer 2s var(--ease-soft-in-out) infinite;
+}
+@keyframes skeletonShimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* ---- global motion safety --------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
