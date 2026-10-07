@@ -331,18 +331,15 @@ func (s *Store) HasRegistrationIP(ctx context.Context, ip string) (bool, error) 
 	return exists, err
 }
 
-// RegisterPublicStudent creates a student and consumes the IP atomically.
+// RegisterPublicStudent creates a student and optionally records the client IP.
 // When requireWhitelist is true, the phone must be an available whitelist entry.
-// Concurrent same-IP registrations: one commits; the other rolls back on unique IP conflict.
+// Empty ip skips one-registration-per-IP enforcement (NAT / shared egress).
 func (s *Store) RegisterPublicStudent(
 	ctx context.Context,
 	name, email, username, passwordHash, phone, securityQuestion, securityAnswerHash, ip string,
 	requireWhitelist bool,
 ) (*models.User, error) {
 	ip = strings.TrimSpace(ip)
-	if ip == "" {
-		return nil, errors.New("empty registration ip")
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -355,12 +352,14 @@ func (s *Store) RegisterPublicStudent(
 		return nil, ErrPhoneBlacklisted
 	}
 
-	var taken bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM registration_ips WHERE ip=$1)`, ip).Scan(&taken); err != nil {
-		return nil, err
-	}
-	if taken {
-		return nil, ErrRegistrationIPTaken
+	if ip != "" {
+		var taken bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM registration_ips WHERE ip=$1)`, ip).Scan(&taken); err != nil {
+			return nil, err
+		}
+		if taken {
+			return nil, ErrRegistrationIPTaken
+		}
 	}
 
 	row := tx.QueryRow(ctx, `
@@ -380,12 +379,14 @@ func (s *Store) RegisterPublicStudent(
 		ON CONFLICT (user_id) DO NOTHING`, u.ID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO registration_ips (ip, user_id) VALUES ($1, $2)`, ip, u.ID); err != nil {
-		if isUniqueViolation(err) {
-			return nil, ErrRegistrationIPTaken
+	if ip != "" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO registration_ips (ip, user_id) VALUES ($1, $2)`, ip, u.ID); err != nil {
+			if isUniqueViolation(err) {
+				return nil, ErrRegistrationIPTaken
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

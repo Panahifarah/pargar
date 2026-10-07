@@ -25,6 +25,10 @@ Public password recovery (`/api/auth/recovery/*` and `/recovery`) is disabled fo
 - Only peers in `TRUSTED_PROXY_CIDRS` are trusted for `X-Forwarded-*` / `X-Real-IP`.
 - CORS: `FRONTEND_ORIGINS` + `PUBLIC_URL` with `AllowCredentials: true`.
 
+## Registration IP binding
+
+`REGISTRATION_ENFORCE_IP` (default **false**) optionally limits one successful public/invite registration per client IP. Leave it off when the app sits behind NAT or shared egress and cannot see real client addresses. Enable only after the edge forwards trustworthy `X-Forwarded-For` / `X-Real-IP` via `TRUSTED_PROXY_CIDRS`.
+
 ## Rate limiting
 
 | Scope | Approximate behavior |
@@ -34,7 +38,7 @@ Public password recovery (`/api/auth/recovery/*` and `/recovery`) is disabled fo
 | External chat export | ~10/min/IP |
 | Per-user uploads | Separately limited |
 
-`/api/health` is excluded from the global ceiling.
+`/api/health` is excluded from the global ceiling. Note: per-IP rate limits still use the peer/forwarded address — configure trusted proxies when you need per-client fairness behind NAT.
 
 ## Uploads
 

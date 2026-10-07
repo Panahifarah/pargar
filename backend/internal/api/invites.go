@@ -130,16 +130,8 @@ func (s *Server) handleRegisterInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := clientAddress(r)
-	if ip == "" || ip == "unknown" {
-		writeErr(w, http.StatusBadRequest, "آدرس شبکه شناسایی نشد")
-		return
-	}
-	if taken, err := s.store.HasRegistrationIP(r.Context(), ip); err != nil {
-		writeErr(w, http.StatusInternalServerError, "بررسی محدودیت ثبت‌نام ممکن نشد")
-		return
-	} else if taken {
-		writeErr(w, http.StatusConflict, "از این شبکه قبلاً ثبت‌نام انجام شده است")
+	ip, ok := s.registrationClientIP(w, r)
+	if !ok {
 		return
 	}
 

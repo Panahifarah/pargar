@@ -63,6 +63,7 @@ One of two patterns:
 |----------|-----------------|--------|
 | `DEV_MODE` | false | Open metrics without token, limited fail-open behavior |
 | `SEED_CURRICULUM` | false (empty in DevMode → true) | Seed lessons/events |
+| `REGISTRATION_ENFORCE_IP` | false | One registration per client IP; keep off behind NAT |
 | `CAPTCHA_EXPOSE_ANSWER` | DevMode only | For tests; never in production |
 | `DONATION_ENABLED` | true | Support card |
 | `DONATION_NOTE` | Copy text | |
