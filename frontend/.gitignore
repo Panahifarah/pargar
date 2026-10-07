@@ -1,0 +1,17 @@
+# deps
+node_modules/
+
+# next
+.next/
+out/
+
+# env
+.env*.local
+
+# misc
+*.log
+.DS_Store
+npm-debug.log*
+
+# vendored at install/build from emoji-datasource-apple (~27MB)
+/public/emoji/
