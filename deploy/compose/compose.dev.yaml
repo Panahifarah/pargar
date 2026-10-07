@@ -1,0 +1,96 @@
+# Local / staging-on-laptop overlay (Traefik + published data ports + mild limits).
+# Usage: see compose.yaml header or scripts/compose-dev.sh
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  rustfs:
+    environment:
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  backend:
+    environment:
+      DEV_MODE: ${DEV_MODE:-false}
+      SEED_CURRICULUM: ${SEED_CURRICULUM:-false}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  frontend:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  traefik:
+    # v3.6.1+ required for Docker Engine 29+ API negotiation
+    image: traefik@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=pargar_pargar
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.web.http.redirections.entrypoint.permanent=true
+      - --entrypoints.web.http.aliasHeadersStrategy=delete
+      - --entrypoints.websecure.http.aliasHeadersStrategy=delete
+      # Dev: Traefik default certificate (browser warning expected on localhost).
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --log.level=INFO
+      - --accesslog=true
+      - --ping=true
+      - --global.checkNewVersion=false
+    ports:
+      - "80:80"
+      - "443:443"
+      # Dashboard only on loopback
+      - "127.0.0.1:8088:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../traefik/dynamic:/etc/traefik/dynamic:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - pargar

@@ -1,0 +1,45 @@
+# Shared Traefik middlewares (file provider).
+# Applied via Docker labels / IngressRoute references.
+
+http:
+  middlewares:
+    redirect-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: false
+        contentTypeNosniff: true
+        browserXssFilter: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+        customResponseHeaders:
+          Server: ""
+          Content-Security-Policy: >-
+            default-src 'self'; base-uri 'self'; form-action 'self';
+            frame-ancestors 'none'; object-src 'none';
+            script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+            img-src 'self' data: blob:; font-src 'self' data:;
+            media-src 'self' blob:; connect-src 'self' ws: wss:;
+            worker-src 'self' blob:
+
+    compress:
+      compress: {}
+
+    noindex:
+      headers:
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow, noarchive"
+
+    # Strip client-supplied forwarding headers before Traefik re-adds trusted ones.
+    # Backend trusts X-Forwarded-* only from TRUSTED_PROXY_CIDRS (Docker/k8s nets).
+    strip-forwarded:
+      headers:
+        customRequestHeaders:
+          X-Real-IP: ""
+          X-Forwarded-For: ""

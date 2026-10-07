@@ -1,0 +1,183 @@
+# Shared services — always combine with compose.dev.yaml or compose.prod.yaml:
+#
+#   Dev:  docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.dev.yaml up -d --build
+#   Prod: docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.prod.yaml --env-file .env.prod up -d --build
+#
+# Or use scripts/compose-dev.sh / scripts/compose-prod.sh / root docker-compose.yml (dev default).
+
+name: pargar
+
+x-backend-env: &backend-env
+  PORT: "8080"
+  DATABASE_URL: postgres://${POSTGRES_USER:-pargar}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-pargar}?sslmode=disable
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+  PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL must be set}
+  FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:?FRONTEND_ORIGINS must be set}
+  METRICS_TOKEN: ${METRICS_TOKEN:-}
+  TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+  STORAGE_DRIVER: s3
+  STORAGE_ENDPOINT: http://rustfs:9000
+  STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+  STORAGE_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be set}
+  STORAGE_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be set}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:-pargar}
+  SEED_CURRICULUM: ${SEED_CURRICULUM:-false}
+  ADMIN_NAME: ${ADMIN_NAME:-Admin}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-pargar-api}
+  DONATION_ENABLED: ${DONATION_ENABLED:-true}
+  DONATION_NOTE: ${DONATION_NOTE:-}
+  PHYSICAL_CERT_ENABLED: ${PHYSICAL_CERT_ENABLED:-true}
+  PHYSICAL_CERT_PRICE_IRR: ${PHYSICAL_CERT_PRICE_IRR:-2500000}
+  PHYSICAL_CERT_WINDOW_DAYS: ${PHYSICAL_CERT_WINDOW_DAYS:-30}
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pargar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-pargar}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pargar
+
+  redis:
+    image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pargar
+
+  rustfs:
+    image: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    restart: unless-stopped
+    command: /data
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be set}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-false}
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks:
+      - pargar
+
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-pargar-backend:local}
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      DEV_MODE: ${DEV_MODE:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pargar
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=pargar_pargar
+      # API + media (higher priority than frontend catch-all)
+      - traefik.http.routers.pargar-api.rule=Host(`${DOMAIN:-localhost}`) && (PathPrefix(`/api`) || PathPrefix(`/media`))
+      - traefik.http.routers.pargar-api.entrypoints=websecure
+      - traefik.http.routers.pargar-api.priority=100
+      - traefik.http.routers.pargar-api.tls=true
+      - traefik.http.routers.pargar-api.middlewares=security-headers@file,compress@file
+      - traefik.http.routers.pargar-api.service=pargar-api
+      - traefik.http.services.pargar-api.loadbalancer.server.port=8080
+      # Certificate public API — noindex
+      - traefik.http.routers.pargar-cert-api.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/api/certificates`)
+      - traefik.http.routers.pargar-cert-api.entrypoints=websecure
+      - traefik.http.routers.pargar-cert-api.priority=110
+      - traefik.http.routers.pargar-cert-api.tls=true
+      - traefik.http.routers.pargar-cert-api.middlewares=security-headers@file,compress@file,noindex@file
+      - traefik.http.routers.pargar-cert-api.service=pargar-api
+
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ""
+        NEXT_PUBLIC_WS_URL: ""
+    image: ${FRONTEND_IMAGE:-pargar-frontend:local}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    depends_on:
+      backend:
+        condition: service_healthy
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3000"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - pargar
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=pargar_pargar
+      - traefik.http.routers.pargar-web.rule=Host(`${DOMAIN:-localhost}`)
+      - traefik.http.routers.pargar-web.entrypoints=websecure
+      - traefik.http.routers.pargar-web.priority=1
+      - traefik.http.routers.pargar-web.tls=true
+      - traefik.http.routers.pargar-web.middlewares=security-headers@file,compress@file
+      - traefik.http.routers.pargar-web.service=pargar-web
+      - traefik.http.services.pargar-web.loadbalancer.server.port=3000
+      # Unlisted certificate pages
+      - traefik.http.routers.pargar-cert-web.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/c`)
+      - traefik.http.routers.pargar-cert-web.entrypoints=websecure
+      - traefik.http.routers.pargar-cert-web.priority=50
+      - traefik.http.routers.pargar-cert-web.tls=true
+      - traefik.http.routers.pargar-cert-web.middlewares=security-headers@file,compress@file,noindex@file
+      - traefik.http.routers.pargar-cert-web.service=pargar-web
+
+networks:
+  pargar:
+    name: pargar_pargar
+
+volumes:
+  pgdata:
+  redis_data:
+  rustfs_data:
