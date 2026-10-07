@@ -1,0 +1,5 @@
+.git
+tmp
+*.test
+media/*
+!media/sample.mp4

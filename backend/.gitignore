@@ -1,0 +1,24 @@
+# build artifacts (root binaries only — do not ignore cmd/server/)
+bin/
+/server
+/pargar
+*.exe
+*.test
+
+# local media uploads (keep seed sample.mp4 for Docker/CI)
+media/*
+!media/sample.mp4
+!media/.gitkeep
+
+# env
+.env
+.env.*
+
+# logs / scratch
+*.log
+tmp/
+.tmp/
+
+# IDE
+.idea/
+.vscode/
