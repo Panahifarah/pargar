@@ -1,0 +1,229 @@
+# Default values — safe for local k3s. Override with values-k3s.yaml / values-prod.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  # Public hostname (Ingress / TLS / PUBLIC_URL)
+  domain: pargar.local
+  # Full public origin browsers use (must match Ingress TLS host)
+  publicUrl: https://pargar.local
+  frontendOrigins: "https://pargar.local"
+  # Docker/k8s pod+service CIDRs — Traefik peer is trusted for X-Forwarded-*
+  trustedProxyCIDRs: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128"
+  # Optional registry prefix, e.g. ghcr.io/pargar → images become ghcr.io/pargar/<repository>:<tag>
+  imageRegistry: ""
+
+imagePullSecrets: []
+
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: pargar-backend
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  env:
+    devMode: "false"
+    seedCurriculum: "false"
+    donationEnabled: "true"
+    # Offline payment only — leave off until ops process is ready; enable in admin settings.
+    physicalCertEnabled: "false"
+    physicalCertPriceIrr: "2500000"
+    physicalCertWindowDays: "30"
+    otelEndpoint: ""
+    otelServiceName: pargar-api
+  # Created only when admin user is missing (see seed.ensureBootstrapAdmin)
+  admin:
+    name: Admin
+    username: admin
+    email: admin@example.com
+  # Prefer existingSecret in production. When empty, chart generate-once (lookup + rand).
+  existingSecret: ""
+  # Optional overrides; leave empty to auto-generate strong values (placeholders like change-me-* are ignored).
+  secrets:
+    jwtSecret: ""
+    adminPassword: ""
+    metricsToken: ""
+
+frontend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: pargar-frontend
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 3000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+# In-cluster data plane (k3s / small clusters). Disable and point to managed services in prod.
+postgres:
+  enabled: true
+  image: postgres:16.4-alpine
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  auth:
+    username: pargar
+    database: pargar
+    # Empty → chart generate-once; placeholders change-me-* are ignored.
+    password: ""
+  existingSecret: ""
+
+redis:
+  enabled: true
+  image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  auth:
+    password: ""
+  existingSecret: ""
+
+rustfs:
+  enabled: true
+  image: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  auth:
+    accessKey: "pargar-rustfs"
+    secretKey: ""
+  bucket: pargar
+  region: us-east-1
+  consoleEnable: false
+  existingSecret: ""
+
+# Postgres dump CronJob (in-cluster postgres only).
+backup:
+  enabled: false
+  schedule: "0 3 * * *"
+  retentionDays: 7
+  persistence:
+    size: 5Gi
+    storageClass: ""
+  image: postgres:16.4-alpine
+
+# External endpoints when in-cluster postgres/redis/rustfs are disabled.
+# Prefer putting these in backend.existingSecret in production.
+external:
+  databaseUrl: ""
+  redisUrl: ""
+  storageEndpoint: ""
+  storageAccessKey: ""
+  storageSecretKey: ""
+
+ingress:
+  enabled: true
+  # k3s ships Traefik; use IngressRoute CRDs (recommended) or standard Ingress
+  className: traefik
+  # Use Traefik IngressRoute + Middleware CRDs (true) vs networking.k8s.io/Ingress (false)
+  useIngressRoute: true
+  annotations: {}
+  tls:
+    enabled: true
+    # When empty and certManager.enabled=false, chart creates a self-signed Secret for k3s/dev.
+    # Prefer certManager.enabled=true in prod, or set existingSecret to a pre-created TLS secret.
+    existingSecret: ""
+    # cert-manager ClusterIssuer name (annotation helper when useIngressRoute=false)
+    clusterIssuer: ""
+
+# cert-manager Certificate CR (writes TLS secret used by IngressRoute)
+certManager:
+  enabled: false
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+    group: ""
+  extraDnsNames: []
+
+# Restrict pod traffic (off for local k3s; on in values-prod.yaml)
+networkPolicy:
+  enabled: false
+  # Namespaces whose pods may reach frontend/backend (Traefik)
+  ingressNamespaces:
+    - kube-system
+  ingressPodLabels:
+    app.kubernetes.io/name: traefik
+
+middlewares:
+  securityHeaders: true
+  compress: true
+  redirectHttps: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podSecurityContext:
+  fsGroup: 10001
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

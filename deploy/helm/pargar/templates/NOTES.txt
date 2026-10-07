@@ -1,0 +1,26 @@
+Pargar {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Public URL:  {{ .Values.global.publicUrl }}
+Domain:      {{ .Values.global.domain }}
+
+1) Ensure DNS /hosts points to your Traefik entrypoint:
+     {{ .Values.global.domain }}  →  Traefik LoadBalancer / node IP
+
+2) Images must exist on the cluster nodes (k3s local):
+     docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.dev.yaml build
+     docker save pargar-backend:local pargar-frontend:local | sudo k3s ctr images import -
+
+3) Upgrade / install:
+     helm upgrade --install {{ .Release.Name }} ./deploy/helm/pargar \
+       -n {{ .Release.Namespace }} --create-namespace \
+       -f deploy/helm/pargar/values-k3s.yaml
+
+4) Health:
+     kubectl -n {{ .Release.Namespace }} get pods,ingressroute,svc
+     curl -k {{ .Values.global.publicUrl }}/api/health
+
+{{- if not .Values.ingress.tls.existingSecret }}
+
+TLS: chart-managed self-signed certificate (browser warning expected).
+For production set ingress.tls.existingSecret (cert-manager).
+{{- end }}

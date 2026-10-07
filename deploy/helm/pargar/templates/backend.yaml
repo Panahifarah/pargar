@@ -1,0 +1,204 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pargar.fullname" . }}-backend
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.backend.service.port }}
+      targetPort: http
+  selector:
+    {{- include "pargar.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pargar.fullname" . }}-backend
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  {{- if not .Values.backend.autoscaling.enabled }}
+  replicas: {{ .Values.backend.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pargar.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "pargar.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      serviceAccountName: {{ include "pargar.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: backend
+          image: {{ include "pargar.image" (dict "root" . "image" .Values.backend.image) | quote }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.service.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.backend.service.port | quote }}
+            - name: PUBLIC_URL
+              value: {{ .Values.global.publicUrl | quote }}
+            - name: FRONTEND_ORIGINS
+              value: {{ .Values.global.frontendOrigins | quote }}
+            - name: TRUSTED_PROXY_CIDRS
+              value: {{ .Values.global.trustedProxyCIDRs | quote }}
+            - name: DEV_MODE
+              value: {{ .Values.backend.env.devMode | quote }}
+            - name: SEED_CURRICULUM
+              value: {{ .Values.backend.env.seedCurriculum | quote }}
+            - name: ADMIN_NAME
+              value: {{ .Values.backend.admin.name | quote }}
+            - name: ADMIN_USERNAME
+              value: {{ .Values.backend.admin.username | quote }}
+            - name: ADMIN_EMAIL
+              value: {{ .Values.backend.admin.email | quote }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: jwt-secret
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: admin-password
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: metrics-token
+                  optional: true
+            - name: DONATION_ENABLED
+              value: {{ .Values.backend.env.donationEnabled | quote }}
+            - name: PHYSICAL_CERT_ENABLED
+              value: {{ .Values.backend.env.physicalCertEnabled | quote }}
+            - name: PHYSICAL_CERT_PRICE_IRR
+              value: {{ .Values.backend.env.physicalCertPriceIrr | quote }}
+            - name: PHYSICAL_CERT_WINDOW_DAYS
+              value: {{ .Values.backend.env.physicalCertWindowDays | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.backend.env.otelEndpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.backend.env.otelServiceName | quote }}
+            - name: STORAGE_DRIVER
+              value: s3
+            - name: STORAGE_REGION
+              value: {{ .Values.rustfs.region | quote }}
+            - name: STORAGE_BUCKET
+              value: {{ .Values.rustfs.bucket | quote }}
+            {{- if .Values.postgres.enabled }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+            - name: POSTGRES_HOST
+              value: {{ include "pargar.postgresHost" . | quote }}
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_SSLMODE
+              value: "disable"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.postgresSecretName" . }}
+                  key: postgres-password
+            {{- else }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: database-url
+            {{- end }}
+            {{- if .Values.redis.enabled }}
+            - name: REDIS_HOST
+              value: {{ include "pargar.redisHost" . | quote }}
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.redisSecretName" . }}
+                  key: redis-password
+            {{- else }}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: redis-url
+            {{- end }}
+            {{- if .Values.rustfs.enabled }}
+            - name: STORAGE_ENDPOINT
+              value: {{ printf "http://%s:9000" (include "pargar.rustfsHost" .) | quote }}
+            - name: STORAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.rustfsSecretName" . }}
+                  key: access-key
+            - name: STORAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.rustfsSecretName" . }}
+                  key: secret-key
+            {{- else }}
+            - name: STORAGE_ENDPOINT
+              value: {{ required "external.storageEndpoint required when rustfs.enabled=false" .Values.external.storageEndpoint | quote }}
+            - name: STORAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: storage-access-key
+            - name: STORAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pargar.appSecretName" . }}
+                  key: storage-secret-key
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          {{- with .Values.backend.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

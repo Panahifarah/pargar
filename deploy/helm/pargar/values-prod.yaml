@@ -1,0 +1,103 @@
+# Production profile — external data plane, registry images, HPA/PDB/NetworkPolicy, cert-manager.
+#   helm upgrade --install pargar ./deploy/helm/pargar -n pargar --create-namespace \
+#     -f deploy/helm/pargar/values-prod.yaml
+#
+# Prerequisites:
+#   - images pushed to ghcr.io/pargar/{backend,frontend}:<tag>
+#   - Secret pargar-app (jwt-secret, admin-password, metrics-token, database-url, redis-url,
+#     storage-access-key, storage-secret-key)
+#   - cert-manager ClusterIssuer letsencrypt-prod
+#   - imagePullSecrets if the registry is private
+
+global:
+  domain: app.example.com
+  publicUrl: https://app.example.com
+  frontendOrigins: "https://app.example.com"
+  imageRegistry: ghcr.io/pargar
+
+imagePullSecrets:
+  - name: ghcr-pull
+
+backend:
+  replicaCount: 2
+  image:
+    repository: backend
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  existingSecret: pargar-app
+  env:
+    devMode: "false"
+    seedCurriculum: "false"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+frontend:
+  replicaCount: 2
+  image:
+    repository: frontend
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# Prefer managed Postgres / Redis / object storage in real prod.
+postgres:
+  enabled: false
+redis:
+  enabled: false
+rustfs:
+  enabled: false
+
+external:
+  databaseUrl: "" # prefer secret key database-url on pargar-app
+  redisUrl: ""
+  storageEndpoint: "https://s3.example.com"
+
+ingress:
+  enabled: true
+  useIngressRoute: true
+  tls:
+    enabled: true
+    existingSecret: "" # Certificate CR owns the secret below
+    clusterIssuer: letsencrypt-prod
+
+certManager:
+  enabled: true
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+
+networkPolicy:
+  enabled: true
+  ingressNamespaces:
+    - kube-system
+  ingressPodLabels:
+    app.kubernetes.io/name: traefik

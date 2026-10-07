@@ -1,0 +1,79 @@
+{{- if and .Values.postgres.enabled .Values.backup.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pargar.fullname" . }}-backups
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.backup.persistence.storageClass }}
+  storageClassName: {{ .Values.backup.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size | quote }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "pargar.fullname" . }}-pg-backup
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "pargar.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            fsGroup: 999
+          containers:
+            - name: pg-dump
+              image: {{ .Values.backup.image | quote }}
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: PGHOST
+                  value: {{ include "pargar.postgresHost" . | quote }}
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: {{ .Values.postgres.auth.username | quote }}
+                - name: PGDATABASE
+                  value: {{ .Values.postgres.auth.database | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "pargar.postgresSecretName" . }}
+                      key: postgres-password
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  set -euo pipefail
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  OUT="/backups/pargar-${STAMP}.sql.gz"
+                  echo "Writing ${OUT}"
+                  pg_dump --no-owner --no-acl | gzip -c > "${OUT}"
+                  find /backups -type f -name 'pargar-*.sql.gz' -mtime +"${RETENTION_DAYS}" -print -delete || true
+                  ls -lh /backups || true
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ include "pargar.fullname" . }}-backups
+{{- end }}

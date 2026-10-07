@@ -1,0 +1,97 @@
+{{- if and .Values.ingress.enabled .Values.ingress.useIngressRoute }}
+{{- $fullName := include "pargar.fullname" . }}
+{{- $domain := .Values.global.domain }}
+{{- $tlsSecret := include "pargar.tlsSecretName" . }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}-http
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`{{ $domain }}`)
+      kind: Rule
+      {{- if .Values.middlewares.redirectHttps }}
+      middlewares:
+        - name: {{ $fullName }}-redirect-https
+      {{- end }}
+      services:
+        - name: {{ $fullName }}-frontend
+          port: {{ .Values.frontend.service.port }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}-https
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # Certificate public API — highest priority + noindex
+    - match: Host(`{{ $domain }}`) && PathPrefix(`/api/certificates`)
+      kind: Rule
+      priority: 110
+      middlewares:
+        {{- if .Values.middlewares.securityHeaders }}
+        - name: {{ $fullName }}-security-headers
+        {{- end }}
+        {{- if .Values.middlewares.compress }}
+        - name: {{ $fullName }}-compress
+        {{- end }}
+        - name: {{ $fullName }}-noindex
+      services:
+        - name: {{ $fullName }}-backend
+          port: {{ .Values.backend.service.port }}
+    # API + media (+ WebSocket /api/ws)
+    - match: Host(`{{ $domain }}`) && (PathPrefix(`/api`) || PathPrefix(`/media`))
+      kind: Rule
+      priority: 100
+      middlewares:
+        {{- if .Values.middlewares.securityHeaders }}
+        - name: {{ $fullName }}-security-headers
+        {{- end }}
+        {{- if .Values.middlewares.compress }}
+        - name: {{ $fullName }}-compress
+        {{- end }}
+      services:
+        - name: {{ $fullName }}-backend
+          port: {{ .Values.backend.service.port }}
+    # Unlisted certificate pages
+    - match: Host(`{{ $domain }}`) && PathPrefix(`/c`)
+      kind: Rule
+      priority: 50
+      middlewares:
+        {{- if .Values.middlewares.securityHeaders }}
+        - name: {{ $fullName }}-security-headers
+        {{- end }}
+        {{- if .Values.middlewares.compress }}
+        - name: {{ $fullName }}-compress
+        {{- end }}
+        - name: {{ $fullName }}-noindex
+      services:
+        - name: {{ $fullName }}-frontend
+          port: {{ .Values.frontend.service.port }}
+    # Frontend catch-all
+    - match: Host(`{{ $domain }}`)
+      kind: Rule
+      priority: 1
+      middlewares:
+        {{- if .Values.middlewares.securityHeaders }}
+        - name: {{ $fullName }}-security-headers
+        {{- end }}
+        {{- if .Values.middlewares.compress }}
+        - name: {{ $fullName }}-compress
+        {{- end }}
+      services:
+        - name: {{ $fullName }}-frontend
+          port: {{ .Values.frontend.service.port }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    secretName: {{ $tlsSecret }}
+  {{- end }}
+{{- end }}

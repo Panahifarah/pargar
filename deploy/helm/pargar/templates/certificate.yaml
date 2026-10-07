@@ -1,0 +1,23 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled .Values.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "pargar.fullname" . }}-tls
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "pargar.tlsSecretName" . }}
+  duration: {{ .Values.certManager.duration | default "2160h" | quote }}
+  renewBefore: {{ .Values.certManager.renewBefore | default "360h" | quote }}
+  issuerRef:
+    name: {{ required "certManager.issuerRef.name required when certManager.enabled" .Values.certManager.issuerRef.name | quote }}
+    kind: {{ .Values.certManager.issuerRef.kind | default "ClusterIssuer" | quote }}
+    {{- if .Values.certManager.issuerRef.group }}
+    group: {{ .Values.certManager.issuerRef.group | quote }}
+    {{- end }}
+  dnsNames:
+    - {{ .Values.global.domain | quote }}
+    {{- range .Values.certManager.extraDnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,55 @@
+# Local k3s profile — self-signed TLS, in-cluster data, single replicas.
+#   helm upgrade --install pargar ./deploy/helm/pargar -n pargar --create-namespace -f deploy/helm/pargar/values-k3s.yaml
+#
+# After install, add to /etc/hosts:  <NODE_IP>  pargar.local
+
+global:
+  domain: pargar.local
+  publicUrl: https://pargar.local
+  frontendOrigins: "https://pargar.local"
+
+backend:
+  replicaCount: 1
+  image:
+    repository: pargar-backend
+    tag: local
+    pullPolicy: IfNotPresent
+  env:
+    seedCurriculum: "true"
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: pargar-frontend
+    tag: local
+    pullPolicy: IfNotPresent
+
+postgres:
+  enabled: true
+  persistence:
+    size: 5Gi
+
+redis:
+  enabled: true
+  persistence:
+    size: 1Gi
+
+rustfs:
+  enabled: true
+  persistence:
+    size: 10Gi
+  consoleEnable: false
+
+backup:
+  enabled: true
+  schedule: "0 3 * * *"
+  retentionDays: 7
+  persistence:
+    size: 2Gi
+
+ingress:
+  enabled: true
+  useIngressRoute: true
+  tls:
+    enabled: true
+    existingSecret: "" # chart generates self-signed for pargar.local

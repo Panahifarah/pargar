@@ -1,0 +1,63 @@
+{{- if .Values.ingress.enabled }}
+{{- if .Values.middlewares.securityHeaders }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "pargar.fullname" . }}-security-headers
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+    frameDeny: true
+    referrerPolicy: strict-origin-when-cross-origin
+    permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+    customResponseHeaders:
+      Server: ""
+      Content-Security-Policy: >-
+        default-src 'self'; base-uri 'self'; form-action 'self';
+        frame-ancestors 'none'; object-src 'none';
+        script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob:; font-src 'self' data:;
+        media-src 'self' blob:; connect-src 'self' ws: wss:;
+        worker-src 'self' blob:
+---
+{{- end }}
+{{- if .Values.middlewares.compress }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "pargar.fullname" . }}-compress
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  compress: {}
+---
+{{- end }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "pargar.fullname" . }}-noindex
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  headers:
+    customResponseHeaders:
+      X-Robots-Tag: "noindex, nofollow, noarchive"
+---
+{{- if and .Values.ingress.useIngressRoute .Values.middlewares.redirectHttps }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "pargar.fullname" . }}-redirect-https
+  labels:
+    {{- include "pargar.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+{{- end }}
+{{- end }}
