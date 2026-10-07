@@ -1,0 +1,48 @@
+# Secrets — never commit (public repo)
+.env
+.env.*
+!.env.example
+!.env.prod.example
+
+# Local caches / tool scratch
+.tmp/
+.cache/
+.gotmp/
+.gocache/
+.gomodcache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs & coverage
+*.log
+*.test
+coverage.out
+coverage.html
+
+# Nested VCS (monorepo root only)
+backend/.git/
+frontend/.git/
+
+# Backend (root binaries only — do not ignore cmd/server/)
+backend/bin/
+backend/server
+backend/pargar
+!backend/cmd/server/
+backend/media/*
+!backend/media/sample.mp4
+!backend/media/.gitkeep
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+frontend/.env*.local
+# Vendored at build from emoji-datasource-apple (~27MB)
+frontend/public/emoji/
