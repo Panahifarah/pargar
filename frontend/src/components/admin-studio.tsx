@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -16,7 +17,6 @@ import {
   Globe,
   GripVertical,
   Heart,
-  KeyRound,
   Layers,
   Loader2,
   Lock,
@@ -454,6 +454,10 @@ function UsersPanel() {
                 (currentUser?.role === "mentor" && u.role === "student");
               return (
               <div key={u.id} className="flex items-center gap-3 px-3 py-2.5">
+                <Link
+                  href={`/profile/${u.id}`}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-md outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
+                >
                 <UserAvatar name={u.name} className="h-9 w-9" {...avatarPropsOf(u)} />
                 <div className="min-w-0 flex-1">
                   <p className="flex items-center gap-2 truncate text-sm font-medium">
@@ -475,6 +479,7 @@ function UsersPanel() {
                     {u.role === "admin" || u.role === "mentor" ? "∞" : formatFaNumber(u.hearts)}
                   </span>
                 </div>
+                </Link>
                 <div className="flex shrink-0 gap-1.5">
                   {canMutate && u.id !== currentUser?.id && (
                     u.isLocked ? (
@@ -515,7 +520,7 @@ function UsersPanel() {
   );
 }
 
-function UserDialog({
+export function UserDialog({
   user,
   onClose,
   onSaved,
@@ -529,18 +534,13 @@ function UserDialog({
   const [form, setForm] = useState<User>(user ?? ({} as User));
   const [password, setPassword] = useState("");
   const [securityAnswer, setSecurityAnswer] = useState("");
-  const [resetAnswer, setResetAnswer] = useState("");
-  const [resetPassword, setResetPassword] = useState("");
   const [saving, setSaving] = useState(false);
-  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     if (user) {
       setForm(user);
       setPassword("");
       setSecurityAnswer("");
-      setResetAnswer("");
-      setResetPassword("");
     }
   }, [user]);
 
@@ -633,29 +633,6 @@ function UserDialog({
     }
   };
 
-  const doReset = async () => {
-    if (!form?.id) return;
-    const pwErr = validatePassword(resetPassword);
-    if (!resetAnswer.trim() || pwErr) {
-      toast.error(pwErr ?? "جواب امنیتی و رمز جدید (حداقل ۸ کاراکتر) لازم است");
-      return;
-    }
-    setResetting(true);
-    try {
-      await http.post(`/api/admin/users/${form.id}/reset-password`, {
-        securityAnswer: resetAnswer,
-        newPassword: resetPassword,
-      });
-      toast.success("رمز عبور ریست شد");
-      setResetAnswer("");
-      setResetPassword("");
-    } catch (e) {
-      toast.error(toUserError(e));
-    } finally {
-      setResetting(false);
-    }
-  };
-
   return (
     <Dialog open={!!user} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto">
@@ -664,7 +641,7 @@ function UserDialog({
           <DialogDescription>
             {isNew
               ? "حساب جدید با تلفن و سوال امنیتی. رمز حداقل ۸ کاراکتر."
-              : "اطلاعات کاربر را به‌روزرسانی کنید. ریست رمز فقط با جواب امنیتی."}
+              : "اطلاعات کاربر را به‌روزرسانی کنید."}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
@@ -766,40 +743,6 @@ function UserDialog({
                 required
                 autoComplete="new-password"
               />
-            </div>
-          )}
-          {!isNew && (
-            <div className="space-y-2 rounded-md border border-dashed border-border p-3">
-              <p className="text-sm font-medium">ریست رمز با سوال امنیتی</p>
-              {form.securityQuestion ? (
-                <p className="text-xs text-muted-foreground">سوال: {form.securityQuestion}</p>
-              ) : (
-                <p className="text-xs text-destructive">سوال امنیتی تعریف نشده است.</p>
-              )}
-              <PasswordInput
-                value={resetAnswer}
-                onChange={(e) => setResetAnswer(e.target.value)}
-                placeholder="جواب امنیتی"
-                dir="rtl"
-                autoComplete="off"
-              />
-              <PasswordInput
-                value={resetPassword}
-                onChange={(e) => setResetPassword(e.target.value)}
-                placeholder="رمز جدید (حداقل ۸ کاراکتر)"
-                minLength={8}
-                autoComplete="new-password"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={resetting || !form.hasSecurityAnswer}
-                onClick={doReset}
-              >
-                {resetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />}
-                ریست رمز
-              </Button>
             </div>
           )}
         </div>

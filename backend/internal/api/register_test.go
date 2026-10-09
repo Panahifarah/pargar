@@ -261,6 +261,7 @@ func TestRegisterDuplicatePhone(t *testing.T) {
 }
 
 func TestRegisterSameIPRejected(t *testing.T) {
+	t.Setenv("REGISTRATION_ENFORCE_IP", "true")
 	e := setup(t)
 	enableRegistration(t, e)
 	whitelistPhones(t, e, "09121110007", "09121110008")
@@ -278,7 +279,27 @@ func TestRegisterSameIPRejected(t *testing.T) {
 	}
 }
 
+func TestRegisterSameIPAllowedWhenEnforcementOff(t *testing.T) {
+	t.Setenv("REGISTRATION_ENFORCE_IP", "false")
+	e := setup(t)
+	enableRegistration(t, e)
+	whitelistPhones(t, e, "09121110007", "09121110008")
+
+	headers := map[string]string{"X-Forwarded-For": "203.0.113.40"}
+	code, body := e.doHeaders(t, "POST", "/api/auth/register", "", headers,
+		registerBody(t, e, "09121110007", "reg-ipoff1@test.dev", "regipoff1"))
+	if code != http.StatusCreated {
+		t.Fatalf("first: %d %v", code, body)
+	}
+	code, body = e.doHeaders(t, "POST", "/api/auth/register", "", headers,
+		registerBody(t, e, "09121110008", "reg-ipoff2@test.dev", "regipoff2"))
+	if code != http.StatusCreated {
+		t.Fatalf("same IP must be allowed when REGISTRATION_ENFORCE_IP=false: %d %v", code, body)
+	}
+}
+
 func TestRegisterUsesForwardedIP(t *testing.T) {
+	t.Setenv("REGISTRATION_ENFORCE_IP", "true")
 	e := setup(t)
 	enableRegistration(t, e)
 	whitelistPhones(t, e, "09121110009", "09121110010", "09121110011")

@@ -46,6 +46,9 @@ type Config struct {
 	PhysicalCertEnabled    bool
 	PhysicalCertPriceIRR   int
 	PhysicalCertWindowDays int
+	// RegistrationEnforceIP limits one successful registration per client IP.
+	// Default false: behind NAT / shared egress the peer IP is not a real client identity.
+	RegistrationEnforceIP bool
 }
 
 func getEnv(key, fallback string) string {
@@ -140,6 +143,7 @@ func Load() *Config {
 		PhysicalCertEnabled:    getEnv("PHYSICAL_CERT_ENABLED", "false") == "true",
 		PhysicalCertPriceIRR:   getEnvInt("PHYSICAL_CERT_PRICE_IRR", 2_500_000),
 		PhysicalCertWindowDays: getEnvInt("PHYSICAL_CERT_WINDOW_DAYS", 30),
+		RegistrationEnforceIP:  getEnv("REGISTRATION_ENFORCE_IP", "false") == "true",
 	}
 }
 

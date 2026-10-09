@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -38,12 +39,16 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { api, apiForm, http, getWsUrl } from "@/lib/api";
+import { api, http, getWsUrl, toUserError } from "@/lib/api";
+import { apiFormProgress, saveRemoteFile } from "@/lib/transfer";
+import { mediaObjectKey } from "@/lib/media";
+import { useCachedObjectUrl } from "@/hooks/use-cached-media";
 import type { ChatAttachment, ChatMessage, ChatReaction, Conversation, Mentor } from "@/lib/types";
 import { useAuth } from "@/lib/auth-store";
 import { cn } from "@/lib/utils";
 import { UserAvatar, avatarPropsOf } from "@/components/ui/user-avatar";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { toast } from "@/components/providers";
 import { AppleEmoji, AppleEmojiText } from "@/components/apple-emoji";
@@ -108,6 +113,7 @@ function LavaLamp() {
 export function ChatWidget() {
   const me = useAuth((s) => s.user);
   const qc = useQueryClient();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<number | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
@@ -118,6 +124,7 @@ export function ChatWidget() {
   const [partnerTyping, setPartnerTyping] = useState(false);
   const [attPref, setAttPref] = useState<ChatAttachment | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadPct, setUploadPct] = useState(0);
   const [notif, setNotif] = useState<{ id: string; partner: number; name: string; body: string } | null>(null);
   const [preview, setPreview] = useState<ChatAttachment | null>(null);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
@@ -126,6 +133,7 @@ export function ChatWidget() {
   const [jumpDown, setJumpDown] = useState(false);
   const [older, setOlder] = useState<ChatMessage[]>([]);
   const [canLoadMore, setCanLoadMore] = useState(false);
+  const [historyAnchor, setHistoryAnchor] = useState<number | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [delArm, setDelArm] = useState<number | null>(null);
   const [reactId, setReactId] = useState<number | null>(null);
@@ -136,9 +144,14 @@ export function ChatWidget() {
   const [matchIdx, setMatchIdx] = useState(0);
   const [pinIdx, setPinIdx] = useState(0);
   const [flashId, setFlashId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const replaceRef = useRef<HTMLInputElement>(null);
+  const replaceTarget = useRef<ChatMessage | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const typingSentAt = useRef(0);
   const typingClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -154,11 +167,13 @@ export function ChatWidget() {
   activeRef.current = active;
   const convRef = useRef<Conversation[]>([]);
 
-const { data: convData } = useQuery({
+  const convQuery = useQuery({
         queryKey: ["conversations"],
         queryFn: () => http.get<{ conversations: Conversation[] }>("/api/chats/conversations"),
         refetchInterval: 20_000,
       });
+  const convData = convQuery.data;
+  const convLoading = convQuery.isPending;
   const conversations = convData?.conversations ?? [];
   convRef.current = conversations;
   const unreadTotal = useMemo(
@@ -172,7 +187,7 @@ const { data: convData } = useQuery({
     enabled: !active && open,
   });
 
-  const { data: messages } = useQuery({
+  const messagesQuery = useQuery({
     queryKey: ["chat", active],
     queryFn: () =>
       http.get<{ messages: ChatMessage[]; hasMore: boolean; pinned?: ChatMessage[] }>(
@@ -181,6 +196,8 @@ const { data: convData } = useQuery({
     enabled: !!active,
     refetchInterval: active ? 5000 : false,
   });
+  const messages = messagesQuery.data;
+  const messagesLoading = !!active && messagesQuery.isPending;
 
   const pinned = messages?.pinned ?? [];
   const pinnedIds = useMemo(() => new Set(pinned.map((p) => p.id)), [pinned]);
@@ -233,9 +250,8 @@ const { data: convData } = useQuery({
     if (!msgSearchOpen || !matchCount) return;
     const id = matchIds[matchIdx];
     if (id == null) return;
-    const el = threadRef.current?.querySelector(`[data-mid="${id}"]`);
-    if (el) requestAnimationFrame(() => el.scrollIntoView({ block: "center", behavior: "smooth" }));
-  }, [matchIdx, msgSearchOpen, matchCount, msgQuery]);
+    setHistoryAnchor(id);
+  }, [matchIdx, msgSearchOpen, matchCount, matchIds]);
 
   const loadOlder = async () => {
     const before = older[0]?.id ?? messages?.messages?.[0]?.id;
@@ -271,6 +287,27 @@ const { data: convData } = useQuery({
       qc.invalidateQueries({ queryKey: ["conversations"] });
     } catch {
       /* ignore */
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!active || editingId == null || editBusy) return;
+    const body = editDraft.trim();
+    if (!body || body.length > MAX_LEN) {
+      toast.error("پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد");
+      return;
+    }
+    setEditBusy(true);
+    try {
+      const res = await http.put<{ message: ChatMessage }>(`/api/chats/${active}/messages/${editingId}`, { body });
+      applyEdited(res.message);
+      setEditingId(null);
+      setEditDraft("");
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+    } catch (err) {
+      toast.error(toUserError(err, "ویرایش ممکن نشد"));
+    } finally {
+      setEditBusy(false);
     }
   };
 
@@ -455,6 +492,7 @@ const { data: convData } = useQuery({
     setEmojiOpen(false);
     setOlder([]);
     setCanLoadMore(false);
+    setHistoryAnchor(null);
     setDelArm(null);
     if (delArmTimer.current) clearTimeout(delArmTimer.current);
     setReactId(null);
@@ -466,6 +504,8 @@ const { data: convData } = useQuery({
     setMsgSearchOpen(false);
     setMsgQuery("");
     setMatchIdx(0);
+    setEditingId(null);
+    setEditDraft("");
     if (pendingDraftRef.current != null) {
       const d = pendingDraftRef.current;
       pendingDraftRef.current = null;
@@ -537,6 +577,9 @@ ws.onmessage = (ev) => {
               }
             }
           }
+        } else if (p.type === "chat_read") {
+          if (p.from && activeRef.current === p.from) qc.invalidateQueries({ queryKey: ["chat", p.from] });
+          qc.invalidateQueries({ queryKey: ["conversations"] });
         } else if (p.type === "typing") {
           if (p.from && activeRef.current === p.from) {
             setPartnerTyping(true);
@@ -545,6 +588,23 @@ ws.onmessage = (ev) => {
           }
         } else if (p.type === "chat_reaction") {
           if (p.from && activeRef.current === p.from) qc.invalidateQueries({ queryKey: ["chat"] });
+        } else if (p.type === "chat_edit") {
+          const item = p.item;
+          if (item && p.from && activeRef.current === p.from) {
+            qc.setQueryData<{ messages: ChatMessage[]; hasMore: boolean; pinned?: ChatMessage[] }>(
+              ["chat", activeRef.current],
+              (old) => {
+                if (!old) return old;
+                return {
+                  ...old,
+                  messages: old.messages.map((m) => (m.id === item.id ? item : m)),
+                  pinned: old.pinned?.map((m) => (m.id === item.id ? item : m)),
+                };
+              },
+            );
+            setOlder((prev) => prev.map((m) => (m.id === item.id ? item : m)));
+          }
+          qc.invalidateQueries({ queryKey: ["conversations"] });
         } else if (p.type === "chat_delete") {
           const deletedId = (p as { id?: number }).id;
           if (deletedId) {
@@ -600,6 +660,8 @@ ws.onmessage = (ev) => {
     setDraft("");
     setAttPref(null);
     setReplyTo(null);
+    setHistoryAnchor(null);
+    wasNearBottomRef.current = true;
     setPending((p) => [...p, temp]);
 try {
       const res = await api<{ message: ChatMessage }>(`/api/chats/${active}/messages`, {
@@ -634,8 +696,9 @@ try {
       return;
     }
     setUploading(true);
+    setUploadPct(0);
     try {
-      const { attachment } = await apiForm<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(file));
+      const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(file), setUploadPct);
       setAttPref(attachment);
     } catch (err) {
       toast.error((err as Error).message || "آپلود ممکن نشد");
@@ -648,6 +711,47 @@ try {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (file) await uploadSelected(file);
+  };
+
+  const beginReplace = (m: ChatMessage) => {
+    const kind = m.attachment?.type;
+    if (kind !== "image" && kind !== "video" && kind !== "audio") return;
+    replaceTarget.current = m;
+    const input = replaceRef.current;
+    if (!input) return;
+    input.accept = kind === "image" ? "image/*" : kind === "video" ? "video/*" : "audio/*";
+    input.click();
+  };
+
+  const onReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const target = replaceTarget.current;
+    replaceTarget.current = null;
+    if (!file || !target || !active) return;
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("فایل باید کمتر از ۲۵ مگابایت باشد");
+      return;
+    }
+    setUploading(true);
+    setUploadPct(0);
+    try {
+      const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(file), setUploadPct);
+      if (attachment.type !== target.attachment?.type) {
+        toast.error("فایل جدید باید از همان نوع باشد");
+        return;
+      }
+      const res = await http.put<{ message: ChatMessage }>(`/api/chats/${active}/messages/${target.id}`, {
+        body: target.body ?? "",
+        attachment,
+      });
+      applyEdited(res.message);
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+    } catch (err) {
+      toast.error(toUserError(err, "جایگذاری ممکن نشد"));
+    } finally {
+      setUploading(false);
+    }
   };
 
   const voiceRef = useRef<{
@@ -697,8 +801,9 @@ try {
     if (!blob || !active || sending || uploading) return;
     cancelVoicePreview();
     setUploading(true);
+    setUploadPct(0);
     try {
-      const { attachment } = await apiForm<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(blob, mime));
+      const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(blob, mime), setUploadPct);
       await send("", attachment);
     } catch (err) {
       toast.error((err as Error).message || "ارسال صوتی ممکن نشد");
@@ -806,8 +911,73 @@ try {
     );
   }, [conversations, query]);
 
-  const thread = useMemo(() => buildThread(msgs, me?.role), [msgs, me?.role]);
-  const emptyThread = msgs.length === 0;
+  const CHAT_PAGE = 40;
+  const view = useMemo(() => {
+    if (!msgs.length) return { items: msgs, start: 0, end: 0 };
+    let end = msgs.length;
+    if (historyAnchor != null) {
+      const idx = msgs.findIndex((m) => m.id === historyAnchor);
+      if (idx >= 0) end = idx + 1;
+    }
+    const start = Math.max(0, end - CHAT_PAGE);
+    return { items: msgs.slice(start, end), start, end };
+  }, [msgs, historyAnchor]);
+  const thread = useMemo(() => buildThread(view.items, me?.role), [view.items, me?.role]);
+
+  useEffect(() => {
+    if (!msgSearchOpen || !matchCount) return;
+    const id = matchIds[matchIdx];
+    if (id == null) return;
+    const el = threadRef.current?.querySelector(`[data-mid="${id}"]`);
+    if (el) requestAnimationFrame(() => el.scrollIntoView({ block: "center", behavior: "smooth" }));
+  }, [matchIdx, msgSearchOpen, matchCount, matchIds, view.items]);
+
+  const showEarlier = async () => {
+    const first = view.items[0];
+    if (!first || loadingOlder) return;
+    wasNearBottomRef.current = false;
+    suppressAutoScrollRef.current = true;
+    if (view.start > 0) {
+      setHistoryAnchor(first.id);
+      requestAnimationFrame(() => {
+        threadRef.current?.querySelector(`[data-mid="${first.id}"]`)?.scrollIntoView({ block: "start" });
+        suppressAutoScrollRef.current = false;
+      });
+      return;
+    }
+    if (!canLoadMore) {
+      suppressAutoScrollRef.current = false;
+      return;
+    }
+    await loadOlder();
+    setHistoryAnchor(first.id);
+    requestAnimationFrame(() => {
+      threadRef.current?.querySelector(`[data-mid="${first.id}"]`)?.scrollIntoView({ block: "end" });
+      suppressAutoScrollRef.current = false;
+    });
+  };
+
+  const emptyThread = !messagesLoading && !messagesQuery.isError && msgs.length === 0;
+
+  const openProfile = (id: number) => {
+    setOpen(false);
+    router.push(`/profile/${id}`);
+  };
+
+  const applyEdited = (item: ChatMessage) => {
+    qc.setQueryData<{ messages: ChatMessage[]; hasMore: boolean; pinned?: ChatMessage[] }>(
+      ["chat", activeRef.current],
+      (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          messages: old.messages.map((m) => (m.id === item.id ? item : m)),
+          pinned: old.pinned?.map((m) => (m.id === item.id ? item : m)),
+        };
+      },
+    );
+    setOlder((prev) => prev.map((m) => (m.id === item.id ? item : m)));
+  };
   const atLimit = draft.length >= MAX_LEN;
   const recording = !!voiceRef.current?.recorder && voiceRef.current.recorder.state === "recording";
 
@@ -854,7 +1024,12 @@ try {
                     <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => setActive(null)}>
                       <ChevronRight className="h-4 w-4" />
                     </Button>
-                    <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => openProfile(partner.id)}
+                      className="relative shrink-0 rounded-full"
+                      aria-label={`پروفایل ${partner.name}`}
+                    >
                       <UserAvatar name={partner.name} className="h-9 w-9" {...avatarPropsOf(partner)} />
                       <span
                         className={cn(
@@ -862,8 +1037,13 @@ try {
                           partner.online ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.8)]" : "bg-muted-foreground/40"
                         )}
                       />
-                    </div>
-                    <div className="min-w-0 flex-1">
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openProfile(partner.id)}
+                      className="min-w-0 flex-1 text-start"
+                      aria-label={`پروفایل ${partner.name}`}
+                    >
                       <p className="truncate text-sm font-extrabold">{partner.name}</p>
                       {partnerTyping ? (
                         <p className="flex items-center gap-1 text-[11px] font-bold text-primary">
@@ -872,7 +1052,7 @@ try {
                       ) : (
                         <p className="text-[11px] text-muted-foreground">{roleLabel(partner.role)}</p>
                       )}
-                    </div>
+                    </button>
                   </>
                 ) : (
                   <>
@@ -1008,7 +1188,14 @@ try {
                       {sortedConvs.length === 0 && conversations.length > 0 && (
                         <p className="px-1 py-3 text-center text-xs text-muted-foreground">گفتگویی یافت نشد.</p>
                       )}
-                      {conversations.length === 0 && !composeOpen && (
+                      {convLoading && conversations.length === 0 && (
+                        <div className="space-y-2" aria-busy="true" aria-label="در حال بارگذاری گفتگوها">
+                          {[0, 1, 2].map((i) => (
+                            <Skeleton key={i} className="h-14 rounded-2xl" />
+                          ))}
+                        </div>
+                      )}
+                      {conversations.length === 0 && !composeOpen && !convLoading && (
                         <div className="space-y-1 p-1">
                           <p className="mb-2 text-xs font-bold text-muted-foreground">برای شروع، روی مداد بزنید</p>
                           {(loveList?.mentors ?? []).map((m) => (
@@ -1155,6 +1342,19 @@ try {
                             <p className="text-sm font-extrabold text-primary">فایل را رها کنید</p>
                           </div>
                         )}
+                        {messagesLoading && <ChatThreadSkeleton />}
+                        {messagesQuery.isError && !messagesLoading && (
+                          <div className="mx-auto max-w-[260px] space-y-3 pt-8 text-center">
+                            <p className="text-sm font-medium text-destructive">بارگذاری پیام‌ها ممکن نشد</p>
+                            <button
+                              type="button"
+                              onClick={() => void messagesQuery.refetch()}
+                              className="rounded-full border border-border px-3 py-1 text-[11px] font-bold"
+                            >
+                              تلاش دوباره
+                            </button>
+                          </div>
+                        )}
                         {emptyThread && (
                           <div className="mx-auto max-w-[260px] space-y-3 pt-8 text-center">
                             <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-primary/10">
@@ -1169,10 +1369,10 @@ try {
                           </div>
                         )}
 
-                        {canLoadMore && (
+                        {(view.start > 0 || canLoadMore) && (
                           <div className="flex justify-center py-1.5">
                             <button
-                              onClick={() => void loadOlder()}
+                              onClick={() => void showEarlier()}
                               disabled={loadingOlder}
                               className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 py-1 text-[10px] font-extrabold text-muted-foreground shadow-soft transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-60"
                             >
@@ -1209,11 +1409,18 @@ try {
                                 </div>
                               )}
                               <div className="group flex w-full items-end gap-1.5">
-                                {!seg.mine && (
-                                  <UserAvatar name={partner?.name ?? "؟"} className="mb-0.5 h-7 w-7 shrink-0" {...avatarPropsOf(partner)} />
+                                {!seg.mine && partner && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openProfile(partner.id)}
+                                    className="mb-0.5 shrink-0 rounded-full"
+                                    aria-label={`پروفایل ${partner.name}`}
+                                  >
+                                    <UserAvatar name={partner.name} className="h-7 w-7" {...avatarPropsOf(partner)} />
+                                  </button>
                                 )}
-                                <div className={cn("flex min-w-0 items-end gap-1", seg.mine ? "ml-auto" : "mr-auto")}>
-                                  <div className={cn("flex min-w-0 flex-col", seg.mine ? "items-end" : "items-start")}>
+                                <div className={cn("flex min-w-0 max-w-[min(100%,20rem)] items-end gap-1 sm:max-w-[24rem]", seg.mine ? "ml-auto" : "mr-auto")}>
+                                  <div className={cn("flex min-w-0 max-w-full flex-col", seg.mine ? "items-end" : "items-start")}>
                                     {seg.msgs.map((m, idx) => {
                                       const isLast = idx === seg.msgs.length - 1;
                                       const mediaOnly = !!m.attachment && !m.body;
@@ -1285,11 +1492,13 @@ try {
                                                 mine={seg.mine}
                                                 time={m.createdAt}
                                                 pending={isPending}
+                                                read={!!m.readAt}
+                                                edited={!!m.editedAt}
                                                 onPreview={setPreview}
                                               />
                                             ) : mediaOnly ? (
                                             <>
-                                              <MediaOnly att={m.attachment!} mine={seg.mine} time={m.createdAt} onPreview={setPreview} />
+                                              <MediaOnly att={m.attachment!} mine={seg.mine} time={m.createdAt} edited={!!m.editedAt} read={!!m.readAt} pending={isPending} onPreview={setPreview} />
                                               </>
                                           ) : onlyEmoji ? (
                                             <>
@@ -1318,21 +1527,54 @@ try {
                                                   onPreview={setPreview}
                                                 />
                                               )}
-                                              {m.body && (
+                                              {editingId === m.id ? (
+                                                <div className="space-y-2">
+                                                  <textarea
+                                                    value={editDraft}
+                                                    onChange={(e) => setEditDraft(e.target.value)}
+                                                    dir={bubbleDir(editDraft)}
+                                                    rows={3}
+                                                    maxLength={MAX_LEN}
+                                                    className="w-full min-w-[12rem] resize-none rounded-lg bg-background px-2 py-1 text-sm text-foreground outline-none"
+                                                  />
+                                                  <div className="flex justify-end gap-1">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => setEditingId(null)}
+                                                      className="rounded-full px-2 py-1 text-[10px] font-bold text-foreground"
+                                                    >
+                                                      انصراف
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      disabled={editBusy}
+                                                      onClick={() => void saveEdit()}
+                                                      className="rounded-full bg-foreground/10 px-2 py-1 text-[10px] font-bold text-foreground disabled:opacity-50"
+                                                    >
+                                                      {editBusy ? "…" : "ذخیره"}
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              ) : m.body ? (
                                                 <p
-                                                  dir="auto"
-                                                  className={cn("whitespace-pre-wrap break-words [unicode-bidi:plaintext]", m.attachment && "mt-1")}
+                                                  dir={bubbleDir(m.body)}
+                                                  className={cn("whitespace-pre-wrap break-words text-start [overflow-wrap:anywhere]", m.attachment && "mt-1")}
                                                 >
                                                   <HighlightBody text={m.body} q={msgQuery} />
                                                 </p>
-                                              )}
-                                              {m.body && (
+                                              ) : null}
+                                              {m.body && editingId !== m.id && (
                                                 <span
                                                   className={cn(
                                                     "mt-1 flex items-center gap-1 text-[10px] leading-none",
                                                     seg.mine ? "justify-end" : "justify-start"
                                                   )}
                                                 >
+                                                  {m.editedAt && (
+                                                    <span className={cn("opacity-75", seg.mine ? "text-primary-foreground" : "text-muted-foreground")}>
+                                                      ویرایش‌شده
+                                                    </span>
+                                                  )}
                                                   <span className={cn("opacity-75", seg.mine ? "text-primary-foreground" : "text-muted-foreground")}>
                                                     {clock(m.createdAt)}
                                                   </span>
@@ -1361,6 +1603,7 @@ try {
                                               />
                                             </div>
                                           )}
+                                          {editingId !== m.id && (
                                           <MsgActions
                                             mine={seg.mine}
                                             voice={m.attachment?.type === "audio"}
@@ -1376,8 +1619,23 @@ try {
                                             onReply={() => setReplyTo(m)}
                                             onCopy={() => copyText(m)}
                                             onPin={() => void togglePin(m)}
+                                            onEdit={
+                                              seg.mine && m.id > 0 && (canReplaceMedia(m) || !!m.body)
+                                                ? () => {
+                                                    setReactId(null);
+                                                    if (canReplaceMedia(m)) {
+                                                      beginReplace(m);
+                                                      return;
+                                                    }
+                                                    setEditingId(m.id);
+                                                    setEditDraft(m.body);
+                                                  }
+                                                : undefined
+                                            }
+                                            editLabel={canReplaceMedia(m) ? "جایگذاری" : "ویرایش پیام"}
                                             onDelete={() => armDelete(m.id)}
                                           />
+                                          )}
                                         </div>
                                       );
                                     })}
@@ -1389,7 +1647,7 @@ try {
                         )}
                       </div>
                       <AnimatePresence>
-                        {jumpDown && (
+                        {(jumpDown || (historyAnchor != null && view.end < msgs.length)) && (
                           <motion.button
                             key="jump-down"
                             initial={{ opacity: 0, y: 10, scale: 0.85 }}
@@ -1397,10 +1655,13 @@ try {
                             exit={{ opacity: 0, y: 10, scale: 0.85 }}
                             transition={softSpring}
                             onClick={() => {
-                              const el = threadRef.current;
-                              if (el) el.scrollTop = el.scrollHeight;
+                              setHistoryAnchor(null);
                               wasNearBottomRef.current = true;
                               setJumpDown(false);
+                              requestAnimationFrame(() => {
+                                const el = threadRef.current;
+                                if (el) el.scrollTop = el.scrollHeight;
+                              });
                             }}
                             aria-label="برو به آخرین پیام"
                             className="absolute bottom-3 end-3 z-30 grid h-9 w-9 place-items-center rounded-full border-2 border-primary/50 bg-card/95 text-primary shadow-soft ring-2 ring-white/40 backdrop-blur-sm transition-colors hover:border-primary hover:bg-primary hover:text-primary-foreground active:scale-90 dark:bg-[#1a1e33]/95 dark:ring-black/30"
@@ -1461,14 +1722,19 @@ try {
                       {(attPref || uploading) && (
                         <div className="relative mb-2 flex items-center gap-2 overflow-hidden rounded-xl border-2 border-border/70 bg-muted/40 px-3 py-2">
                           {uploading && (
-                            <span className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-primary/10">
-                              <span className="block h-full w-1/3 animate-[metaprog_1.1s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-primary/70 via-primary to-accent/70" />
+                            <span className="pointer-events-none absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-primary/10">
+                              <span
+                                className="block h-full bg-primary transition-[width] duration-150"
+                                style={{ width: `${Math.round(uploadPct * 100)}%` }}
+                              />
                             </span>
                           )}
                           {uploading ? (
                             <>
                               <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                              <span className="flex-1 text-xs font-medium text-muted-foreground">در حال آپلود…</span>
+                              <span className="flex-1 text-xs font-medium text-muted-foreground">
+                                در حال آپلود… {fa(Math.round(uploadPct * 100))}٪
+                              </span>
                             </>
                           ) : attPref ? (
                             <>
@@ -1479,7 +1745,7 @@ try {
                                   aria-label="پیش‌نمایش تصویر"
                                   className="group relative h-28 w-28 shrink-0 cursor-zoom-in overflow-hidden rounded-xl border-2 border-border/70"
                                 >
-                                  <img
+                                  <CachedImg
                                     src={attPref.url}
                                     alt={attPref.name}
                                     className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
@@ -1656,6 +1922,7 @@ try {
         className="hidden"
         onChange={onFile}
       />
+      <input ref={replaceRef} type="file" className="hidden" onChange={(e) => void onReplaceFile(e)} />
 
       <AnimatePresence>
         {preview && (
@@ -1687,17 +1954,7 @@ try {
                 >
                   <ExternalLink className="h-4 w-4" />
                 </a>
-                <a
-                  href={preview.url}
-                  download={preview.name}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white transition-colors hover:bg-white hover:text-black"
-                  aria-label="دانلود"
-                  title="دانلود"
-                >
-                  <Download className="h-4 w-4" />
-                </a>
+                <PreviewSaveButton url={preview.url} name={preview.name} cache={preview.type !== "video"} />
                 <button
                   onClick={() => setPreview(null)}
                   aria-label="بستن"
@@ -1784,17 +2041,26 @@ function isGifName(att: ChatAttachment) {
   return /\.gif($|\?)/i.test(att.name || "") || /\.gif($|\?)/i.test(att.url || "");
 }
 
+function canReplaceMedia(m: ChatMessage): boolean {
+  const kind = m.attachment?.type;
+  return kind === "image" || kind === "video" || kind === "audio";
+}
+
 function GifSticker({
   att,
   mine,
   time,
   pending,
+  read,
+  edited,
   onPreview,
 }: {
   att: ChatAttachment;
   mine: boolean;
   time: string;
   pending?: boolean;
+  read?: boolean;
+  edited?: boolean;
   onPreview?: (att: ChatAttachment) => void;
 }) {
   return (
@@ -1805,24 +2071,113 @@ function GifSticker({
         className="group relative block cursor-zoom-in overflow-hidden rounded-xl outline-none"
         aria-label={`باز کردن ${att.name}`}
       >
-        <img
+        <CachedImg
           src={att.url}
           alt={att.name}
-          loading="lazy"
-          draggable={false}
           className="max-h-44 w-auto max-w-full rounded-xl object-contain transition-transform duration-200 group-hover:scale-[1.03]"
         />
       </button>
       <span className="mt-0.5 flex items-center gap-1 px-1.5 text-[10px] leading-none">
+        {edited && <span className="text-muted-foreground/80">ویرایش‌شده</span>}
         <span className="text-muted-foreground/80">{clock(time)}</span>
         {mine &&
           (pending ? (
             <Clock className="h-3 w-3 animate-spin text-muted-foreground/80 [animation-duration:1.6s]" />
           ) : (
-            <SeenTicks read />
+            <SeenTicks read={read} />
           ))}
       </span>
     </div>
+  );
+}
+
+function CachedImg({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  const shown = useCachedObjectUrl(src);
+  if (!shown) {
+    return <span className={cn("block animate-pulse bg-muted/50", className)} aria-hidden />;
+  }
+  return <img src={shown} alt={alt} draggable={false} className={className} />;
+}
+
+function FileSaveButton({ att, mine, className }: { att: ChatAttachment; mine: boolean; className?: string }) {
+  const [pct, setPct] = useState<number | null>(null);
+  const save = async (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (pct !== null) return;
+    setPct(0);
+    try {
+      await saveRemoteFile(att.url, att.name, setPct);
+    } catch (err) {
+      toast.error((err as Error).message || "دانلود ممکن نشد");
+    } finally {
+      setPct(null);
+    }
+  };
+  return (
+    <div
+      className={cn(
+        "relative flex w-full items-center gap-2 overflow-hidden rounded-xl bg-background/50 px-3 py-2 text-start",
+        !mine && "border border-border/50",
+        className,
+      )}
+    >
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/15">
+        <FileText className="h-4 w-4 text-primary" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-bold" dir="auto">{att.name}</span>
+        <span className="block text-[10px] text-muted-foreground">
+          {pct !== null ? `در حال دانلود… ${fa(Math.round(pct * 100))}٪` : bytes(att.size)}
+        </span>
+      </span>
+      <button
+        type="button"
+        onClick={(e) => void save(e)}
+        disabled={pct !== null}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-70"
+        aria-label="دانلود فایل"
+        title="دانلود"
+      >
+        {pct !== null ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+      </button>
+      {pct !== null && (
+        <span className="absolute inset-x-0 bottom-0 h-1 bg-primary/15">
+          <span className="block h-full bg-primary transition-[width] duration-150" style={{ width: `${Math.round(pct * 100)}%` }} />
+        </span>
+      )}
+    </div>
+  );
+}
+
+function PreviewSaveButton({ url, name, cache = true }: { url: string; name: string; cache?: boolean }) {
+  const [pct, setPct] = useState<number | null>(null);
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (pct !== null) return;
+        setPct(0);
+        void saveRemoteFile(url, name, setPct, { cache })
+          .catch((err) => toast.error((err as Error).message || "دانلود ممکن نشد"))
+          .finally(() => setPct(null));
+      }}
+      className="relative grid h-9 w-9 place-items-center overflow-hidden rounded-full bg-white/10 text-white transition-colors hover:bg-white hover:text-black"
+      aria-label={pct !== null ? `دانلود ${fa(Math.round(pct * 100))} درصد` : "دانلود"}
+      title="دانلود"
+    >
+      {pct !== null ? (
+        <span className="text-[10px] font-black tabular-nums">{fa(Math.round(pct * 100))}</span>
+      ) : (
+        <Download className="h-4 w-4" />
+      )}
+      {pct !== null && (
+        <span className="absolute inset-x-1 bottom-1 h-0.5 overflow-hidden rounded-full bg-white/30">
+          <span className="block h-full bg-white" style={{ width: `${Math.round(pct * 100)}%` }} />
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -1830,11 +2185,17 @@ function MediaOnly({
   att,
   mine,
   time,
+  edited,
+  read,
+  pending,
   onPreview,
 }: {
   att: ChatAttachment;
   mine: boolean;
   time: string;
+  edited?: boolean;
+  read?: boolean;
+  pending?: boolean;
   onPreview?: (att: ChatAttachment) => void;
 }) {
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1853,9 +2214,17 @@ function MediaOnly({
     previewTimer.current = null;
   };
   const corner = mine ? "end-1.5 bottom-1.5" : "start-1.5 bottom-1.5";
+  const receipt = mine ? (
+    pending ? (
+      <Clock className="h-3 w-3 animate-spin text-white/80 [animation-duration:1.6s]" />
+    ) : (
+      <SeenTicks read={read} />
+    )
+  ) : null;
   const chip = (
-    <span className={cn("absolute bottom-1.5 rounded-md bg-black/50 px-1.5 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm", corner)}>
-      {clock(time)}
+    <span className={cn("absolute bottom-1.5 flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm", corner)}>
+      <span>{edited ? `ویرایش‌شده · ${clock(time)}` : clock(time)}</span>
+      {receipt}
     </span>
   );
   if (att.type === "image") {
@@ -1867,7 +2236,7 @@ function MediaOnly({
         className="relative block w-full cursor-zoom-in"
         aria-label={`باز کردن ${att.name}`}
       >
-        <img src={att.url} alt={att.name} loading="lazy" className="max-h-72 w-full object-cover" />
+        <CachedImg src={att.url} alt={att.name} className="max-h-72 w-full object-cover" />
         {chip}
       </button>
     );
@@ -1876,8 +2245,9 @@ function MediaOnly({
     return (
       <div className="relative overflow-hidden">
         <ChatVideoPlayer att={att} onPreview={() => onPreview?.(att)} />
-        <span className="pointer-events-none absolute end-1.5 top-1.5 rounded-full bg-black/50 px-1.5 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm">
-          {clock(time)}
+        <span className="pointer-events-none absolute end-1.5 top-1.5 flex items-center gap-1 rounded-full bg-black/55 px-1.5 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm">
+          <span>{edited ? `ویرایش‌شده · ${clock(time)}` : clock(time)}</span>
+          {receipt}
         </span>
       </div>
     );
@@ -1887,30 +2257,20 @@ function MediaOnly({
       <div className="px-3 py-2">
         <VoicePlayer att={att} mine={mine} />
         <span className={cn("mt-1 flex items-center gap-1 text-[10px] leading-none", mine ? "justify-end" : "justify-start")}>
+          {edited && <span className={cn("opacity-75", mine ? "text-primary-foreground/70" : "text-muted-foreground/70")}>ویرایش‌شده</span>}
           <span className={cn("opacity-75", mine ? "text-primary-foreground/70" : "text-muted-foreground/70")}>{clock(time)}</span>
-          {mine && <SeenTicks read />}
+          {mine && (pending ? <Clock className="h-3 w-3 animate-spin opacity-70 [animation-duration:1.6s]" /> : <SeenTicks read={read} />)}
         </span>
       </div>
     );
   }
   return (
     <div className="px-3 py-2">
-      <a
-        href={att.url}
-        target="_blank"
-        rel="noreferrer"
-        onDoubleClick={(e) => e.preventDefault()}
-        className={cn("flex items-center gap-2 rounded-xl bg-background/50 px-3 py-2", !mine && "border border-border/50")}
-      >
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/15">
-          <FileText className="h-4 w-4 text-primary" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-bold" dir="auto">{att.name}</span>
-          <span className="block text-[10px] text-muted-foreground">{bytes(att.size)}</span>
-        </span>
-        <Download className="h-4 w-4 shrink-0 text-muted-foreground/60" />
-      </a>
+      <FileSaveButton att={att} mine={mine} />
+      <span className={cn("mt-1 flex items-center gap-1 text-[10px] leading-none", mine ? "justify-end" : "justify-start")}>
+        <span className={cn("opacity-75", mine ? "text-primary-foreground/70" : "text-muted-foreground/70")}>{clock(time)}</span>
+        {mine && (pending ? <Clock className="h-3 w-3 animate-spin opacity-70 [animation-duration:1.6s]" /> : <SeenTicks read={read} />)}
+      </span>
     </div>
   );
 }
@@ -1951,7 +2311,7 @@ function AttachmentView({
           className="block w-full cursor-zoom-in"
           aria-label={`باز کردن ${att.name}`}
         >
-          <img src={att.url} alt={att.name} loading="lazy" className="max-h-56 w-full object-cover" />
+          <CachedImg src={att.url} alt={att.name} className="max-h-56 w-full object-cover" />
         </button>
         <span className="absolute bottom-1.5 end-1.5 rounded-md bg-black/50 px-1.5 py-0.5 text-[10px] font-bold text-white">
           {clock(time)}
@@ -1980,34 +2340,11 @@ function AttachmentView({
           )}
         >
           <span className={mine ? "text-primary-foreground/70" : "text-muted-foreground/70"}>{clock(time)}</span>
-          {mine && <SeenTicks read />}
         </div>
       </div>
     );
   }
-  return (
-    <a
-      href={att.url}
-      target="_blank"
-      rel="noreferrer"
-      onDoubleClick={(e) => e.preventDefault()}
-      className={cn(
-        "mb-0.5 flex items-center gap-2 rounded-xl bg-background/50 px-3 py-2",
-        !mine && "border border-border/50"
-      )}
-    >
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/15">
-        <FileText className="h-4 w-4 text-primary" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs font-bold" dir="auto">
-          {att.name}
-        </span>
-        <span className="block text-[10px] text-muted-foreground">{bytes(att.size)}</span>
-      </span>
-      <Download className="h-4 w-4 shrink-0 text-muted-foreground/60" />
-    </a>
-  );
+  return <FileSaveButton att={att} mine={mine} className="mb-0.5" />;
 }
 
 let activeVoice: HTMLAudioElement | null = null;
@@ -2389,32 +2726,21 @@ function ChatVideoPlayer({
 }
 
 function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
+  const objectKey = mediaObjectKey(att.url);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const liveRef = useRef<{ ctx: AudioContext; analyser: AnalyserNode } | null>(null);
   const rafRef = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [bars, setBars] = useState<number[]>(() => voiceBars(att.url, 44));
+  const [bars] = useState<number[]>(() => voiceBars(objectKey || att.name, 44));
   const [live, setLive] = useState<number[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    analyzeAudio(att.url)
-      .then((b) => {
-        if (!cancelled) setBars(b);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [att.url]);
+  const [downloading, setDownloading] = useState<number | null>(null);
 
   useEffect(() => {
     const a = new Audio();
-    a.crossOrigin = "anonymous";
-    a.src = att.url;
     a.preload = "metadata";
+    a.src = att.url;
     audioRef.current = a;
     const onMeta = () => setDuration(Number.isFinite(a.duration) ? a.duration : 0);
     const onTime = () => setCurrent(a.currentTime);
@@ -2422,28 +2748,26 @@ function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
       setPlaying(false);
       setCurrent(0);
       setLive(null);
-      stopPulse();
       if (activeVoice === a) activeVoice = null;
-    };
-    const onErr = () => {
-      setDuration(0);
     };
     a.addEventListener("loadedmetadata", onMeta);
+    a.addEventListener("durationchange", onMeta);
     a.addEventListener("timeupdate", onTime);
     a.addEventListener("ended", onEnd);
-    a.addEventListener("error", onErr);
     return () => {
-      stopPulse();
       a.pause();
+      a.src = "";
       if (activeVoice === a) activeVoice = null;
       a.removeEventListener("loadedmetadata", onMeta);
+      a.removeEventListener("durationchange", onMeta);
       a.removeEventListener("timeupdate", onTime);
       a.removeEventListener("ended", onEnd);
-      a.removeEventListener("error", onErr);
       audioRef.current = null;
+      liveRef.current = null;
     };
+    // The signed query can refresh without a new recording. Playback stays on this object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [att.url]);
+  }, [objectKey]);
 
   useEffect(() => {
     return () => stopActiveVoice();
@@ -2473,6 +2797,16 @@ function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
     setLive(null);
   };
 
+  const saveVoice = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (downloading !== null) return;
+    setDownloading(0);
+    void saveRemoteFile(att.url, att.name || "voice", setDownloading)
+      .catch(() => toast.error("دانلود صدا ممکن نشد"))
+      .finally(() => setDownloading(null));
+  };
+
   const toggle = () => {
     const a = audioRef.current;
     if (!a) return;
@@ -2484,6 +2818,7 @@ function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
     }
     stopActiveVoice();
     activeVoice = a;
+    if (!a.src) a.src = att.url;
     if (!liveRef.current) {
       try {
         const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -2495,18 +2830,23 @@ function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
           analyser.smoothingTimeConstant = 0.7;
           src.connect(analyser);
           analyser.connect(ctx.destination);
+          void ctx.resume();
           liveRef.current = { ctx, analyser };
         }
       } catch {
         /* waveform peaks optional */
       }
     }
+    void liveRef.current?.ctx.resume();
     void a.play().then(
       () => {
         setPlaying(true);
         if (liveRef.current) startPulse();
       },
-      () => setPlaying(false)
+      () => {
+        setPlaying(false);
+        toast.error("پخش صدا ممکن نشد");
+      }
     );
   };
 
@@ -2560,7 +2900,12 @@ function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
   const shown = live ?? bars;
 
   return (
-    <div className="flex items-center gap-2.5 rounded-xl bg-background/50 p-2">
+    <div className="relative flex items-center gap-2.5 overflow-hidden rounded-xl bg-background/50 p-2">
+      {downloading !== null && (
+        <span className="absolute inset-x-0 bottom-0 h-1 bg-primary/15">
+          <span className="block h-full bg-primary transition-[width] duration-150" style={{ width: `${Math.round(downloading * 100)}%` }} />
+        </span>
+      )}
       <button
         type="button"
         onClick={toggle}
@@ -2630,54 +2975,25 @@ function VoicePlayer({ att, mine }: { att: ChatAttachment; mine: boolean }) {
         <div className="mt-0.5 flex items-center justify-between text-[10px] tabular-nums">
           <span className={mine ? "text-primary-foreground/70" : "text-muted-foreground"}>{fmtDur(current)}</span>
           <span className={mine ? "text-primary-foreground/70" : "text-muted-foreground"}>
-            {fmtDur(dur)}
+            {downloading !== null ? `دانلود ${fa(Math.round(downloading * 100))}٪` : fmtDur(dur)}
           </span>
         </div>
       </div>
+      <button
+        type="button"
+        onClick={saveVoice}
+        disabled={downloading !== null}
+        className={cn(
+          "grid h-8 w-8 shrink-0 place-items-center rounded-lg transition-colors disabled:opacity-70",
+          mine ? "text-primary-foreground/80 hover:bg-primary-foreground/15" : "text-muted-foreground hover:bg-background"
+        )}
+        aria-label="دانلود صدا"
+        title="دانلود"
+      >
+        {downloading !== null ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+      </button>
     </div>
   );
-}
-
-function analyzeAudio(url: string): Promise<number[]> {
-  const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Ctx) return Promise.resolve(voiceBars(url, 44));
-  const ctx = new Ctx();
-  const fallback = (): number[] => {
-    void ctx.close();
-    return voiceBars(url, 44);
-  };
-  return fetch(url)
-    .then((r) => {
-      if (!r.ok) throw new Error("fetch");
-      return r.arrayBuffer();
-    })
-    .then((buf) => ctx.decodeAudioData(buf))
-    .then((audio) => {
-      const data = audio.getChannelData(0);
-      const n = 44;
-      const seg = Math.max(1, Math.floor(data.length / n));
-      const out: number[] = [];
-      for (let i = 0; i < n; i++) {
-        let max = 0;
-        const start = i * seg;
-        const end = Math.min(data.length, start + seg);
-        for (let j = start; j < end; j++) {
-          const v = Math.abs(data[j]);
-          if (v > max) max = v;
-        }
-        out.push(max);
-      }
-      const peak = Math.max(...out, 1e-6);
-      const rough = out.map((v) => Math.max(0.08, Math.min(1, (v / peak) * 1.1)));
-      const smooth = rough.map((v, i) => {
-        const lo = rough[Math.max(0, i - 1)] ?? v;
-        const hi = rough[Math.min(n - 1, i + 1)] ?? v;
-        return (lo + v * 2 + hi) / 4;
-      });
-      void ctx.close();
-      return smooth;
-    })
-    .catch(() => fallback());
 }
 
 function voiceBars(seed: string, n: number) {
@@ -2706,6 +3022,7 @@ function fmtDur(sec: number) {
 }
 
 function ZoomableImg({ src, alt }: { src: string; alt?: string }) {
+  const shown = useCachedObjectUrl(src);
   const [scale, setScale] = useState(1);
   const [off, setOff] = useState({ x: 0, y: 0 });
   const [grabbing, setGrabbing] = useState(false);
@@ -2798,7 +3115,7 @@ function ZoomableImg({ src, alt }: { src: string; alt?: string }) {
   return (
     <img
       ref={imgRef}
-      src={src}
+      src={shown || undefined}
       alt={alt ?? ""}
       draggable={false}
       onDoubleClick={(e) => {
@@ -2820,7 +3137,7 @@ function ZoomableImg({ src, alt }: { src: string; alt?: string }) {
 
 function AttThumb({ att }: { att: ChatAttachment }) {
   if (att.type === "image")
-    return <img src={att.url} alt={att.name} className="h-10 w-10 shrink-0 rounded-lg object-cover" />;
+    return <CachedImg src={att.url} alt={att.name} className="h-10 w-10 shrink-0 rounded-lg object-cover" />;
   if (att.type === "video")
     return (
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/15">
@@ -2856,6 +3173,34 @@ const MENTOR_SUGGESTIONS = [
 
 function isMentorOf(role: string) {
   return role === "mentor" || role === "admin";
+}
+
+function bubbleDir(text: string): "rtl" | "ltr" {
+  for (const ch of text) {
+    if (ch === " " || ch === "\n" || ch === "\t") continue;
+    const code = ch.codePointAt(0) ?? 0;
+    const rtl =
+      (code >= 0x0600 && code <= 0x06ff) ||
+      (code >= 0x0750 && code <= 0x077f) ||
+      (code >= 0x08a0 && code <= 0x08ff) ||
+      (code >= 0xfb50 && code <= 0xfdff) ||
+      (code >= 0xfe70 && code <= 0xfeff);
+    if (rtl) return "rtl";
+    if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) return "ltr";
+  }
+  return "rtl";
+}
+
+function ChatThreadSkeleton() {
+  return (
+    <div className="space-y-3 pt-2" aria-busy="true" aria-label="در حال بارگذاری پیام‌ها">
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className={cn("flex", i % 2 ? "justify-end" : "justify-start")}>
+          <Skeleton className={cn("h-14 rounded-2xl", i % 2 ? "w-40" : "w-52")} />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function roleLabel(role: string) {
@@ -2925,7 +3270,7 @@ function PinnedPreview({ m }: { m: ChatMessage }) {
   if (att?.type === "image") {
     return (
       <span className="mt-0.5 flex min-w-0 items-center gap-2">
-        <img
+        <CachedImg
           src={att.url}
           alt=""
           className={cn(
@@ -3036,8 +3381,33 @@ function pickMime() {
 }
 
 function SeenTicks({ read }: { read?: boolean }) {
-  if (read) return <CheckCheck className="h-3.5 w-3.5 text-success" />;
-  return <Check className="h-3.5 w-3.5 text-muted-foreground/60" />;
+  const seen = !!read;
+  const label = seen ? "دیده شد" : "ارسال شد";
+  return (
+    <span
+      tabIndex={0}
+      className={cn(
+        "group/receipt pointer-events-auto inline-flex cursor-default items-center overflow-hidden rounded-full text-[10px] font-extrabold leading-none outline-none transition-all duration-200",
+        "hover:gap-0.5 hover:bg-background hover:px-1.5 hover:py-0.5 hover:shadow-sm hover:ring-1",
+        "focus-visible:gap-0.5 focus-visible:bg-background focus-visible:px-1.5 focus-visible:py-0.5 focus-visible:shadow-sm focus-visible:ring-1",
+        seen
+          ? "text-success hover:ring-success/50 focus-visible:ring-success/50"
+          : "text-current opacity-80 hover:text-foreground hover:opacity-100 hover:ring-border focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-border",
+      )}
+      aria-label={label}
+    >
+      {seen ? (
+        <CheckCheck className="h-3.5 w-3.5 shrink-0" strokeWidth={2.75} />
+      ) : (
+        <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={2.6} />
+      )}
+      <span className="grid grid-cols-[0fr] transition-[grid-template-columns] duration-200 group-hover/receipt:grid-cols-[1fr] group-focus-visible/receipt:grid-cols-[1fr]">
+        <span className="overflow-hidden">
+          <span className="whitespace-nowrap ps-0.5">{label}</span>
+        </span>
+      </span>
+    </span>
+  );
 }
 
 function TypingDots() {
@@ -3177,6 +3547,8 @@ function MsgActions({
   onReply,
   onCopy,
   onPin,
+  onEdit,
+  editLabel,
   onDelete,
 }: {
   mine: boolean;
@@ -3190,6 +3562,8 @@ function MsgActions({
   onReply: () => void;
   onCopy: () => void;
   onPin: () => void;
+  onEdit?: () => void;
+  editLabel?: string;
   onDelete: () => void;
 }) {
   return (
@@ -3283,6 +3657,16 @@ function MsgActions({
             className="grid h-6 w-6 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
           >
             <Copy className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {mine && onEdit && (
+          <button
+            onClick={onEdit}
+            aria-label={editLabel || "ویرایش پیام"}
+            title={editLabel || "ویرایش پیام"}
+            className="grid h-6 w-6 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+          >
+            <Pencil className="h-3.5 w-3.5" />
           </button>
         )}
         {mine && (

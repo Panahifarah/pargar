@@ -28,7 +28,7 @@
 
 - Whitelist and blacklist are **mutually exclusive**; import resolves conflicts.
 - A phone already tied to an account cannot re-enter either list as a fresh entry.
-- One account per phone and per IP on registration paths.
+- One account per phone. Optional one-account-per-IP (`REGISTRATION_ENFORCE_IP`, default off — unsuitable behind NAT).
 - Blacklist blocks all registration paths (public + invite) and keeps a failed-attempt history tab.
 
 ## Certificates

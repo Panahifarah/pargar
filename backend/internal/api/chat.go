@@ -37,6 +37,7 @@ func (s *Server) handleListMentors(w http.ResponseWriter, r *http.Request) {
 		if actor.Role == models.RoleStudent && m.Role != models.RoleMentor && m.Role != models.RoleAdmin {
 			continue
 		}
+		s.signUserMedia(&m)
 		safe = append(safe, map[string]any{
 			"id": m.ID, "name": m.Name, "email": m.Email, "role": m.Role,
 			"avatarVariant": m.AvatarVariant, "avatarPalette": m.AvatarPalette, "avatarPhoto": m.AvatarPhoto,
@@ -111,10 +112,16 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 				unread++
 			}
 		}
+		photo := p.AvatarPhoto
+		if photo != "" {
+			tmp := &models.User{ID: p.ID, AvatarPhoto: photo}
+			s.signUserMedia(tmp)
+			photo = tmp.AvatarPhoto
+		}
 		conv := conversation{
 			Partner: map[string]any{
 				"id": p.ID, "name": p.Name, "email": p.Email, "role": p.Role,
-				"avatarVariant": p.AvatarVariant, "avatarPalette": p.AvatarPalette, "avatarPhoto": p.AvatarPhoto,
+				"avatarVariant": p.AvatarVariant, "avatarPalette": p.AvatarPalette, "avatarPhoto": photo,
 				"online": s.hub.Online(p.ID),
 			},
 			UnreadCount: unread,
@@ -137,6 +144,7 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "شما اجازهٔ گفتگو با این کاربر را ندارید")
 		return
 	}
+	_ = s.markIncomingChatRead(r.Context(), u, partner)
 
 	if raw := r.URL.Query().Get("around"); raw != "" {
 		aroundID, err := strconv.ParseInt(raw, 10, 64)
@@ -156,7 +164,6 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = s.store.FillReactions(r.Context(), u.ID, msgs)
-		_ = s.store.MarkChatRead(r.Context(), u.ID, partner)
 		s.resignChatMessages(msgs)
 		pinned, _ := s.store.ListPinnedChatMessages(r.Context(), u.ID, partner)
 		if pinned == nil {
@@ -197,7 +204,6 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.store.FillReactions(r.Context(), u.ID, msgs)
-	_ = s.store.MarkChatRead(r.Context(), u.ID, partner)
 	s.resignChatMessages(msgs)
 	pinned, _ := s.store.ListPinnedChatMessages(r.Context(), u.ID, partner)
 	if pinned == nil {
@@ -337,6 +343,73 @@ func (s *Server) handleChatReact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "emoji": emoji, "reactions": reactions})
 }
 
+func (s *Server) handleChatEdit(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	partner := routeID(r, "partner")
+	if !s.canChatWith(r.Context(), u, partner) {
+		writeErr(w, http.StatusForbidden, "شما اجازهٔ گفتگو با این کاربر را ندارید")
+		return
+	}
+	msgID := routeID(r, "id")
+	var req struct {
+		Body       string             `json:"body"`
+		Attachment *models.Attachment `json:"attachment,omitempty"`
+	}
+	if err := bodyJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "دادهٔ ارسالی نامعتبر است")
+		return
+	}
+	req.Body = strings.TrimSpace(req.Body)
+	if len(req.Body) > 4000 {
+		writeErr(w, http.StatusBadRequest, "پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد")
+		return
+	}
+
+	var (
+		msg *models.ChatMessage
+		err error
+	)
+	if req.Attachment != nil {
+		att := req.Attachment
+		att.Type = strings.ToLower(strings.TrimSpace(att.Type))
+		if att.Type != "image" && att.Type != "video" && att.Type != "audio" {
+			writeErr(w, http.StatusBadRequest, "فقط عکس، ویدیو یا صدا را می‌توان جایگزین کرد")
+			return
+		}
+		key := mediaKeyFromURL(att.URL)
+		if key == "" || !mediaKeyOwnedByUser(key, u.ID) {
+			writeErr(w, http.StatusBadRequest, "پیوست متعلق به شما نیست")
+			return
+		}
+		if q := strings.Index(att.URL, "?"); q >= 0 {
+			att.URL = att.URL[:q]
+		}
+		if att.Name == "" {
+			att.Name = "file"
+		}
+		msg, err = s.store.ReplaceChatAttachment(r.Context(), u.ID, partner, msgID, u.Role, req.Body, att.Type, att.URL, att.Name, att.Size)
+	} else {
+		if req.Body == "" {
+			writeErr(w, http.StatusBadRequest, "پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد")
+			return
+		}
+		msg, err = s.store.EditChatMessage(r.Context(), u.ID, partner, msgID, u.Role, req.Body)
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "پیام پیدا نشد")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "ویرایش پیام ممکن نشد")
+		return
+	}
+	s.resignChatMessage(msg)
+	event := map[string]any{"type": "chat_edit", "item": msg, "from": u.ID}
+	s.hub.Push(u.ID, event)
+	s.hub.Push(partner, event)
+	writeJSON(w, http.StatusOK, map[string]any{"message": msg})
+}
+
 func (s *Server) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
 	partner := routeID(r, "partner")
@@ -473,11 +546,23 @@ func (s *Server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "شما اجازهٔ گفتگو با این کاربر را ندارید")
 		return
 	}
-	if err := s.store.MarkChatRead(r.Context(), u.ID, partner); err != nil {
+	if err := s.markIncomingChatRead(r.Context(), u, partner); err != nil {
 		writeErr(w, http.StatusInternalServerError, "به‌روزرسانی وضعیت خوانده‌شدن ممکن نشد")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) markIncomingChatRead(ctx context.Context, reader *models.User, partnerID int64) error {
+	if reader == nil {
+		return nil
+	}
+	n, err := s.store.MarkChatRead(ctx, reader.ID, partnerID, reader.Role)
+	if err != nil || n == 0 {
+		return err
+	}
+	s.hub.Push(partnerID, map[string]any{"type": "chat_read", "from": reader.ID})
+	return nil
 }
 
 func (s *Server) canChatWith(ctx context.Context, actor *models.User, partnerID int64) bool {

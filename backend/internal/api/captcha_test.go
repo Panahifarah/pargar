@@ -30,6 +30,10 @@ func TestCaptchaImageChallenge(t *testing.T) {
 	if id == "" || img == "" || answer == "" {
 		t.Fatalf("captcha missing fields: %v", body)
 	}
+	exp, ok := body["expiresIn"].(float64)
+	if !ok || exp < 60 || exp > 180 {
+		t.Fatalf("expiresIn should be a short window: %v", body["expiresIn"])
+	}
 	if _, ok := body["question"]; ok {
 		t.Fatalf("legacy question field should be gone: %v", body)
 	}

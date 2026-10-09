@@ -66,6 +66,8 @@ spec:
               value: {{ .Values.backend.env.devMode | quote }}
             - name: SEED_CURRICULUM
               value: {{ .Values.backend.env.seedCurriculum | quote }}
+            - name: REGISTRATION_ENFORCE_IP
+              value: {{ .Values.backend.env.registrationEnforceIP | quote }}
             - name: ADMIN_NAME
               value: {{ .Values.backend.admin.name | quote }}
             - name: ADMIN_USERNAME
