@@ -130,6 +130,7 @@ func TestInviteRevoke(t *testing.T) {
 }
 
 func TestInviteDuplicatePhoneAndIP(t *testing.T) {
+	t.Setenv("REGISTRATION_ENFORCE_IP", "true")
 	e := setup(t)
 	inv := createInvite(t, e, 5, "", nil)
 	token := inv["token"].(string)

@@ -57,6 +57,7 @@ type chatExportMessage struct {
 	ReplyTo    *int64                `json:"replyTo,omitempty"`
 	Pinned     bool                  `json:"pinned"`
 	PinnedAt   *time.Time            `json:"pinnedAt,omitempty"`
+	EditedAt   *time.Time            `json:"editedAt,omitempty"`
 	Attachment *chatExportAttachment `json:"attachment,omitempty"`
 }
 
@@ -183,6 +184,7 @@ func (s *Server) buildProjectChatExport(r *http.Request) (*chatExportPayload, []
 					ReplyTo:    m.ReplyTo,
 					Pinned:     m.PinnedAt != nil,
 					PinnedAt:   m.PinnedAt,
+					EditedAt:   m.EditedAt,
 				}
 				if m.Attachment != nil {
 					att := &chatExportAttachment{

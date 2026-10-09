@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Loader2, RefreshCw, UserPlus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, UserPlus } from "lucide-react";
 import { useAuth } from "@/lib/auth-store";
 import { http, toUserError } from "@/lib/api";
 import type { User } from "@/lib/types";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { CaptchaField, type CaptchaChallenge } from "@/components/captcha-field";
 import {
   validateEmail,
   validateName,
@@ -29,11 +30,6 @@ const STEPS = [
   { id: 2, title: "امنیت", hint: "ایمیل و سوال امنیتی" },
   { id: 3, title: "گذرواژه", hint: "رمز و کد امنیتی" },
 ] as const;
-
-type CaptchaChallenge = {
-  challengeId: string;
-  imageBase64: string;
-};
 
 type RegisterFormProps = {
   endpoint: string;
@@ -73,29 +69,9 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
   const [securityAnswer, setSecurityAnswer] = useState("");
   const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [challenge, setChallenge] = useState<CaptchaChallenge | null>(null);
-  const [captchaLoading, setCaptchaLoading] = useState(false);
+  const [captchaKey, setCaptchaKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const loadCaptcha = useCallback(async () => {
-    setCaptchaLoading(true);
-    setCaptchaAnswer("");
-    try {
-      const data = await http.get<CaptchaChallenge>("/api/auth/captcha");
-      setChallenge(data);
-    } catch (err) {
-      setChallenge(null);
-      setError(toUserError(err, "بارگذاری کد امنیتی ممکن نشد"));
-    } finally {
-      setCaptchaLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (step === 3) {
-      void loadCaptcha();
-    }
-  }, [step, loadCaptcha]);
 
   const goNext = () => {
     setError(null);
@@ -152,7 +128,7 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
     }
     if (!challenge) {
       setError("ابتدا کد امنیتی را بارگذاری کنید");
-      void loadCaptcha();
+      setCaptchaKey((k) => k + 1);
       return;
     }
     setLoading(true);
@@ -176,7 +152,7 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
       router.push("/cap");
     } catch (err) {
       setError(toUserError(err, "ثبت‌نام ناموفق بود"));
-      void loadCaptcha();
+      setCaptchaKey((k) => k + 1);
     } finally {
       setLoading(false);
     }
@@ -322,54 +298,14 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
                 placeholder="همان رمز را دوباره وارد کنید"
               />
             </Field>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="reg-captcha">کد امنیتی</Label>
-                <button
-                  type="button"
-                  onClick={() => void loadCaptcha()}
-                  disabled={captchaLoading}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline disabled:opacity-50"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${captchaLoading ? "animate-spin" : ""}`} />
-                  تازه‌سازی
-                </button>
-              </div>
-              <div className="flex items-stretch gap-3">
-                <div
-                  className="relative flex h-14 min-w-[9.5rem] shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted/60 shadow-inner"
-                  aria-live="polite"
-                >
-                  {captchaLoading || !challenge?.imageBase64 ? (
-                    <span className="text-sm text-muted-foreground">…</span>
-                  ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={`data:image/png;base64,${challenge.imageBase64}`}
-                      alt="کد امنیتی"
-                      width={160}
-                      height={52}
-                      className="h-full w-full object-contain select-none"
-                      draggable={false}
-                    />
-                  )}
-                </div>
-                <Input
-                  id="reg-captcha"
-                  type="text"
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  spellCheck={false}
-                  value={captchaAnswer}
-                  onChange={(e) => setCaptchaAnswer(e.target.value.toUpperCase())}
-                  required
-                  dir="ltr"
-                  className="h-14 text-center font-mono tracking-widest uppercase placeholder:text-center"
-                  placeholder="کد تصویر"
-                  maxLength={6}
-                />
-              </div>
-            </div>
+            <CaptchaField
+              key={captchaKey}
+              id="reg-captcha"
+              value={captchaAnswer}
+              onChange={setCaptchaAnswer}
+              onChallenge={setChallenge}
+              onError={setError}
+            />
           </>
         )}
 
@@ -400,7 +336,7 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
               variant="gradient"
               className="h-12 min-w-0 flex-1"
               size="lg"
-              disabled={loading || captchaLoading || !challenge}
+              disabled={loading || !challenge}
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
               {submitLabel}

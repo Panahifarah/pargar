@@ -27,6 +27,29 @@ func (s *Server) registrationRequireWhitelist(r *http.Request) bool {
 	return s.settingTruthy(r, "registration_require_whitelist", true)
 }
 
+// registrationClientIP returns the IP to bind to a registration when enforcement is on.
+// When REGISTRATION_ENFORCE_IP is false (default), returns "" so NAT / shared egress is ignored.
+func (s *Server) registrationClientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if s.cfg == nil || !s.cfg.RegistrationEnforceIP {
+		return "", true
+	}
+	ip := clientAddress(r)
+	if ip == "" || ip == "unknown" {
+		writeErr(w, http.StatusBadRequest, "آدرس شبکه شناسایی نشد")
+		return "", false
+	}
+	taken, err := s.store.HasRegistrationIP(r.Context(), ip)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "بررسی محدودیت ثبت‌نام ممکن نشد")
+		return "", false
+	}
+	if taken {
+		writeErr(w, http.StatusConflict, "از این شبکه قبلاً ثبت‌نام انجام شده است")
+		return "", false
+	}
+	return ip, true
+}
+
 func (s *Server) handleRegisterStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":          s.registrationEnabled(r),
@@ -83,16 +106,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := clientAddress(r)
-	if ip == "" || ip == "unknown" {
-		writeErr(w, http.StatusBadRequest, "آدرس شبکه شناسایی نشد")
-		return
-	}
-	if taken, err := s.store.HasRegistrationIP(r.Context(), ip); err != nil {
-		writeErr(w, http.StatusInternalServerError, "بررسی محدودیت ثبت‌نام ممکن نشد")
-		return
-	} else if taken {
-		writeErr(w, http.StatusConflict, "از این شبکه قبلاً ثبت‌نام انجام شده است")
+	ip, ok := s.registrationClientIP(w, r)
+	if !ok {
 		return
 	}
 

@@ -306,6 +306,7 @@ func (s *Server) handlePutAvatar(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "به‌روزرسانی آواتار ممکن نشد")
 		return
 	}
+	s.signUserMedia(user)
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 }
 

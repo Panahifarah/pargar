@@ -63,6 +63,7 @@ func (s *Server) handleWeeklyLeaderboard(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			continue
 		}
+		s.signUserMedia(usr)
 		entries = append(entries, lbEntry{
 			UserID: sc.userID, Name: usr.Name, Email: usr.Email, XP: sc.xp, Rank: i + 1,
 			AvatarVariant: usr.AvatarVariant, AvatarPalette: usr.AvatarPalette, AvatarPhoto: usr.AvatarPhoto,

@@ -13,12 +13,28 @@ import (
 	"pargar/backend/internal/models"
 )
 
+// mediaSignWindow keeps one signature for a stretch of time. The same object
+// then keeps the same URL, so clients do not reload a photo that did not change.
+const mediaSignWindow = 15 * time.Minute
+
+func stableMediaExpiry(now time.Time, ttl, window time.Duration) int64 {
+	if window <= 0 {
+		window = mediaSignWindow
+	}
+	if ttl < window {
+		ttl = window
+	}
+	w := int64(window.Seconds())
+	slot := now.Unix() / w
+	return (slot+1)*w + int64(ttl.Seconds())
+}
+
 func (s *Server) signMediaURL(key string) string {
 	key = strings.TrimPrefix(strings.TrimSpace(key), "/")
 	if key == "" {
 		return ""
 	}
-	exp := time.Now().Add(s.cfg.MediaURLTTL).Unix()
+	exp := stableMediaExpiry(time.Now(), s.cfg.MediaURLTTL, mediaSignWindow)
 	sig := mediaHMAC(s.cfg.JWTSecret, key, exp)
 	return fmt.Sprintf("%s/media/%s?exp=%d&sig=%s",
 		s.cfg.PublicURL,

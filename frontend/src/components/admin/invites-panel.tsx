@@ -68,16 +68,18 @@ export function InvitesPanel() {
   const [editBusy, setEditBusy] = useState(false);
   const [page, setPage] = useState(1);
   const [q, setQ] = useState("");
+  const [status, setStatus] = useState<"" | RegistrationInvite["status"]>("");
 
   useEffect(() => {
     setPage(1);
-  }, [q]);
+  }, [q, status]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "invites", q, page],
+    queryKey: ["admin", "invites", q, status, page],
     queryFn: () => {
       const params = new URLSearchParams(buildPageQuery(page));
       if (q.trim()) params.set("q", q.trim());
+      if (status) params.set("status", status);
       return http.get<Paginated<RegistrationInvite>>(`/api/admin/invites?${params.toString()}`);
     },
   });
@@ -296,14 +298,43 @@ export function InvitesPanel() {
         </CardHeader>
         <CardContent className="space-y-4">
           <ListToolbar>
+            <div className="flex flex-wrap items-center gap-2">
+              {(
+                [
+                  ["", "همه"],
+                  ["active", "فعال"],
+                  ["paused", "متوقف"],
+                  ["exhausted", "تکمیل‌شده"],
+                  ["revoked", "لغو شده"],
+                ] as const
+              ).map(([value, label]) => (
+                <Button
+                  key={value || "all"}
+                  type="button"
+                  size="sm"
+                  variant={status === value ? "default" : "outline"}
+                  onClick={() => setStatus(value)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
             <Input
               placeholder="جستجو با برچسب…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               className="max-w-xs"
             />
-            {q && (
-              <Button type="button" size="sm" variant="ghost" onClick={() => setQ("")}>
+            {(q || status) && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setQ("");
+                  setStatus("");
+                }}
+              >
                 پاک کردن
               </Button>
             )}
@@ -315,7 +346,7 @@ export function InvitesPanel() {
           )}
           {!isLoading && invites.length === 0 && (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              {q.trim() ? "نتیجه‌ای یافت نشد." : "هنوز لینک عضویتی ساخته نشده است."}
+              {q.trim() || status ? "نتیجه‌ای یافت نشد." : "هنوز لینک عضویتی ساخته نشده است."}
             </p>
           )}
           <div className="space-y-2">

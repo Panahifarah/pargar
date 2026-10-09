@@ -24,6 +24,7 @@ const PROTECTED_PREFIXES = [
   "/quiz",
   "/notifications",
   "/lockout",
+  "/profile",
 ];
 
 function needsAuth(p: string) {
