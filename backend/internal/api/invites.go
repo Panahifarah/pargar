@@ -284,8 +284,15 @@ func (s *Server) handleAdminCreateInvite(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAdminListInvites(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	switch models.InviteStatus(status) {
+	case "", models.InviteActive, models.InvitePaused, models.InviteRevoked, models.InviteExhausted:
+	default:
+		writeErr(w, http.StatusBadRequest, "وضعیت نامعتبر است")
+		return
+	}
 	p := parsePageParams(r)
-	invites, total, err := s.store.ListRegistrationInvites(r.Context(), q, p.PageSize, p.Offset)
+	invites, total, err := s.store.ListRegistrationInvites(r.Context(), q, status, p.PageSize, p.Offset)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "بارگذاری لینک‌های عضویت ممکن نشد")
 		return

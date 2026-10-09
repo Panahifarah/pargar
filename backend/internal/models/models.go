@@ -219,6 +219,7 @@ type ChatMessage struct {
 	ReplyTo    *int64         `json:"replyTo,omitempty"`
 	PinnedAt   *time.Time     `json:"pinnedAt,omitempty"`
 	Pinned     bool           `json:"pinned"`
+	EditedAt   *time.Time     `json:"editedAt,omitempty"`
 	Attachment *Attachment    `json:"attachment,omitempty"`
 	Reactions  []ChatReaction `json:"reactions,omitempty"`
 }

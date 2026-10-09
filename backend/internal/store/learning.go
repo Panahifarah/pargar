@@ -7,17 +7,17 @@ import (
 
 // LearningOverview is cohort-level learning analytics for staff.
 type LearningOverview struct {
-	StudentsActive   int64   `json:"studentsActive"`
-	StudentsLocked   int64   `json:"studentsLocked"`
-	StudentsTotal    int64   `json:"studentsTotal"`
-	LessonsTotal     int64   `json:"lessonsTotal"`
-	Completions      int64   `json:"completions"`
-	Attempts7d       int64   `json:"attempts7d"`
-	Passes7d         int64   `json:"passes7d"`
-	PassRate7d       float64 `json:"passRate7d"`
-	AvgWatchPct      float64 `json:"avgWatchPct"`
-	XPAwarded7d      int64   `json:"xpAwarded7d"`
-	StudentsStreaking int64  `json:"studentsStreaking"`
+	StudentsActive    int64   `json:"studentsActive"`
+	StudentsLocked    int64   `json:"studentsLocked"`
+	StudentsTotal     int64   `json:"studentsTotal"`
+	LessonsTotal      int64   `json:"lessonsTotal"`
+	Completions       int64   `json:"completions"`
+	Attempts7d        int64   `json:"attempts7d"`
+	Passes7d          int64   `json:"passes7d"`
+	PassRate7d        float64 `json:"passRate7d"`
+	AvgWatchPct       float64 `json:"avgWatchPct"`
+	XPAwarded7d       int64   `json:"xpAwarded7d"`
+	StudentsStreaking int64   `json:"studentsStreaking"`
 }
 
 func (s *Store) LearningOverview(ctx context.Context) (*LearningOverview, error) {
@@ -81,10 +81,40 @@ type StudentLearningRow struct {
 	LastActivityAt *time.Time `json:"lastActivityAt,omitempty"`
 }
 
-func (s *Store) ListStudentLearning(ctx context.Context, q string) ([]StudentLearningRow, error) {
+func (s *Store) ListStudentLearning(ctx context.Context, q, filter, sort string, limit, offset int) ([]StudentLearningRow, int64, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	var lessonsTotal int64
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM lessons WHERE is_active`).Scan(&lessonsTotal); err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	where := `u.role = 'student'
+			AND ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%')`
+	switch filter {
+	case "active":
+		where += ` AND u.is_active AND NOT u.is_locked`
+	case "locked":
+		where += ` AND u.is_locked`
+	}
+	order := `u.xp DESC, u.id ASC`
+	switch sort {
+	case "progress":
+		order = `COALESCE(p.passed, 0) DESC, u.id ASC`
+	case "streak":
+		order = `u.streak_current DESC, u.id ASC`
+	case "activity":
+		order = `u.last_activity_date DESC NULLS LAST, u.id ASC`
+	}
+	var total int64
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users u WHERE `+where, q).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT u.id, u.name, u.username, u.email, u.xp, u.hearts, u.streak_current,
@@ -105,12 +135,11 @@ func (s *Store) ListStudentLearning(ctx context.Context, q string) ([]StudentLea
 			WHERE created_at >= now() - interval '7 days'
 			GROUP BY user_id
 		) a ON a.user_id = u.id
-		WHERE u.role = 'student'
-			AND ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%')
-		ORDER BY u.xp DESC, u.id ASC
-		LIMIT 500`, q)
+		WHERE `+where+`
+		ORDER BY `+order+`
+		LIMIT $2 OFFSET $3`, q, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := make([]StudentLearningRow, 0)
@@ -122,7 +151,7 @@ func (s *Store) ListStudentLearning(ctx context.Context, q string) ([]StudentLea
 			&r.IsLocked, &r.IsActive, &r.LastActivityAt,
 			&r.LessonsPassed, &r.Attempts7d, &r.Passes7d,
 		); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if r.LessonsTotal > 0 {
 			r.ProgressPct = float64(r.LessonsPassed) / float64(r.LessonsTotal) * 100
@@ -132,21 +161,21 @@ func (s *Store) ListStudentLearning(ctx context.Context, q string) ([]StudentLea
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 type LessonLearningDetail struct {
-	LessonID        int64      `json:"lessonId"`
-	ChapterID       int64      `json:"chapterId"`
-	ChapterTitle    string     `json:"chapterTitle"`
-	Title           string     `json:"title"`
-	SortOrder       int        `json:"sortOrder"`
-	WatchedPct      float64    `json:"watchedPct"`
-	QuizUnlocked    bool       `json:"quizUnlocked"`
-	PassedQuiz      bool       `json:"passedQuiz"`
-	QuizCompletedAt *time.Time `json:"quizCompletedAt,omitempty"`
-	LastAttemptStatus string   `json:"lastAttemptStatus,omitempty"`
-	LastAttemptScore  float64  `json:"lastAttemptScore,omitempty"`
+	LessonID          int64      `json:"lessonId"`
+	ChapterID         int64      `json:"chapterId"`
+	ChapterTitle      string     `json:"chapterTitle"`
+	Title             string     `json:"title"`
+	SortOrder         int        `json:"sortOrder"`
+	WatchedPct        float64    `json:"watchedPct"`
+	QuizUnlocked      bool       `json:"quizUnlocked"`
+	PassedQuiz        bool       `json:"passedQuiz"`
+	QuizCompletedAt   *time.Time `json:"quizCompletedAt,omitempty"`
+	LastAttemptStatus string     `json:"lastAttemptStatus,omitempty"`
+	LastAttemptScore  float64    `json:"lastAttemptScore,omitempty"`
 }
 
 type AttemptLearningDetail struct {
@@ -178,11 +207,11 @@ type WatchSessionDetail struct {
 }
 
 type UserLearningDetail struct {
-	User      StudentLearningRow      `json:"user"`
-	Lessons   []LessonLearningDetail  `json:"lessons"`
-	Attempts  []AttemptLearningDetail `json:"attempts"`
-	XPEvents  []XPEventDetail         `json:"xpEvents"`
-	Sessions  []WatchSessionDetail    `json:"sessions"`
+	User     StudentLearningRow      `json:"user"`
+	Lessons  []LessonLearningDetail  `json:"lessons"`
+	Attempts []AttemptLearningDetail `json:"attempts"`
+	XPEvents []XPEventDetail         `json:"xpEvents"`
+	Sessions []WatchSessionDetail    `json:"sessions"`
 }
 
 func (s *Store) UserLearningDetail(ctx context.Context, userID int64) (*UserLearningDetail, error) {
@@ -190,30 +219,28 @@ func (s *Store) UserLearningDetail(ctx context.Context, userID int64) (*UserLear
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.ListStudentLearning(ctx, "")
-	if err != nil {
+	row := StudentLearningRow{
+		ID: u.ID, Name: u.Name, Username: u.Username, Email: u.Email,
+		XP: u.XP, Hearts: u.Hearts, StreakCurrent: u.StreakCurrent,
+		IsLocked: u.IsLocked, IsActive: u.IsActive, LastActivityAt: u.LastActivityDate,
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM lessons WHERE is_active`).Scan(&row.LessonsTotal); err != nil {
 		return nil, err
 	}
-	var row StudentLearningRow
-	found := false
-	for _, r := range list {
-		if r.ID == userID {
-			row = r
-			found = true
-			break
-		}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM lesson_progress WHERE user_id=$1 AND passed_quiz`, userID).Scan(&row.LessonsPassed); err != nil {
+		return nil, err
 	}
-	if !found {
-		row = StudentLearningRow{
-			ID: u.ID, Name: u.Name, Username: u.Username, Email: u.Email,
-			XP: u.XP, Hearts: u.Hearts, StreakCurrent: u.StreakCurrent,
-			IsLocked: u.IsLocked, IsActive: u.IsActive, LastActivityAt: u.LastActivityDate,
-		}
-		_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM lessons WHERE is_active`).Scan(&row.LessonsTotal)
-		_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM lesson_progress WHERE user_id=$1 AND passed_quiz`, userID).Scan(&row.LessonsPassed)
-		if row.LessonsTotal > 0 {
-			row.ProgressPct = float64(row.LessonsPassed) / float64(row.LessonsTotal) * 100
-		}
+	if row.LessonsTotal > 0 {
+		row.ProgressPct = float64(row.LessonsPassed) / float64(row.LessonsTotal) * 100
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*), COUNT(*) FILTER (WHERE status='passed')
+		FROM quiz_attempts
+		WHERE user_id=$1 AND created_at >= now() - interval '7 days'`, userID).Scan(&row.Attempts7d, &row.Passes7d); err != nil {
+		return nil, err
+	}
+	if row.Attempts7d > 0 {
+		row.PassRate7d = float64(row.Passes7d) / float64(row.Attempts7d) * 100
 	}
 
 	detail := &UserLearningDetail{User: row, Lessons: []LessonLearningDetail{}, Attempts: []AttemptLearningDetail{}, XPEvents: []XPEventDetail{}, Sessions: []WatchSessionDetail{}}
@@ -221,7 +248,7 @@ func (s *Store) UserLearningDetail(ctx context.Context, userID int64) (*UserLear
 	lrows, err := s.pool.Query(ctx, `
 		SELECT l.id, l.chapter_id, c.title, l.title, l.sort_order,
 			COALESCE(p.watched_pct, 0), COALESCE(p.quiz_unlocked, false), COALESCE(p.passed_quiz, false), p.quiz_completed_at,
-			COALESCE(la.status, ''), COALESCE(la.score_pct, 0)
+			COALESCE(la.status::text, ''), COALESCE(la.score_pct, 0)
 		FROM lessons l
 		JOIN chapters c ON c.id = l.chapter_id
 		LEFT JOIN lesson_progress p ON p.lesson_id = l.id AND p.user_id = $1

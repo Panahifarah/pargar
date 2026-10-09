@@ -28,7 +28,7 @@ func TestLearningOverviewSmoke(t *testing.T) {
 	if o == nil {
 		t.Fatal("nil overview")
 	}
-	students, err := st.ListStudentLearning(ctx, "")
+	students, _, err := st.ListStudentLearning(ctx, "", "", "xp", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

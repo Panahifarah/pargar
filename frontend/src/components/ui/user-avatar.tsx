@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import BoringAvatar from "boring-avatars";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
+import { mediaObjectKey } from "@/lib/media";
 
 const AVATAR_COLORS = ["#7d6df2", "#0f9b8e", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#65a30d", "#f59e0b"];
 export { AVATAR_COLORS };
@@ -41,6 +42,40 @@ export function avatarPropsOf(u: AvatarOwner): { src: string | null; variant: Av
   };
 }
 
+function useSettledPhoto(src?: string | null): string | null {
+  const [painted, setPainted] = useState<string | null>(null);
+  const paintedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!src) {
+      paintedRef.current = null;
+      setPainted(null);
+      return;
+    }
+    if (src === paintedRef.current) return;
+    let cancel = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancel) return;
+      paintedRef.current = src;
+      setPainted(src);
+    };
+    img.onerror = () => {
+      if (cancel) return;
+      if (mediaObjectKey(src) !== mediaObjectKey(paintedRef.current)) {
+        paintedRef.current = null;
+        setPainted(null);
+      }
+    };
+    img.src = src;
+    return () => {
+      cancel = true;
+    };
+  }, [src]);
+
+  return painted;
+}
+
 export function UserAvatar({
   name,
   src,
@@ -54,12 +89,17 @@ export function UserAvatar({
   palette?: string[];
   className?: string;
 }) {
-  if (src) {
+  const painted = useSettledPhoto(src);
+  if (painted) {
     return (
-      <Avatar className={cn("ring-1 ring-black/5 dark:ring-white/10", className)}>
-        <AvatarImage src={src} alt={name} />
-        <AvatarFallback />
-      </Avatar>
+      <span
+        className={cn(
+          "relative inline-grid shrink-0 place-items-center overflow-hidden rounded-full bg-background ring-1 ring-black/5 dark:ring-white/10",
+          className
+        )}
+      >
+        <img src={painted} alt={name} className="h-full w-full object-cover" draggable={false} />
+      </span>
     );
   }
   return (

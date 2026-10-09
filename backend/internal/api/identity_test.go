@@ -45,7 +45,7 @@ func TestUniquePhone(t *testing.T) {
 	}
 }
 
-func TestAdminResetPasswordRequiresSecurityAnswer(t *testing.T) {
+func TestAdminResetPassword(t *testing.T) {
 	e := setup(t)
 	admin := login(t, e, bootstrapAdminEmail)
 	code, body := e.do(t, "POST", "/api/admin/users", admin, map[string]any{
@@ -59,14 +59,14 @@ func TestAdminResetPasswordRequiresSecurityAnswer(t *testing.T) {
 	uid := int64(body["user"].(map[string]any)["id"].(float64))
 
 	code, _ = e.do(t, "POST", "/api/admin/users/"+itoa(uid)+"/reset-password", admin, map[string]any{
-		"securityAnswer": "اشتباه", "newPassword": "newpass123",
+		"newPassword": "short",
 	})
-	if code != http.StatusForbidden {
-		t.Fatalf("wrong answer should 403, got %d", code)
+	if code != http.StatusBadRequest {
+		t.Fatalf("short password: %d", code)
 	}
 
 	code, body = e.do(t, "POST", "/api/admin/users/"+itoa(uid)+"/reset-password", admin, map[string]any{
-		"securityAnswer": "تهران", "newPassword": "newpass123",
+		"newPassword": "newpass123",
 	})
 	if code != http.StatusOK {
 		t.Fatalf("reset: %d %v", code, body)

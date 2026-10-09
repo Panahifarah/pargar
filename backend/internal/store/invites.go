@@ -146,7 +146,7 @@ func (s *Store) CreateRegistrationInvite(
 	return scanInvite(row)
 }
 
-func (s *Store) ListRegistrationInvites(ctx context.Context, query string, limit, offset int) ([]models.RegistrationInvite, int64, error) {
+func (s *Store) ListRegistrationInvites(ctx context.Context, query, status string, limit, offset int) ([]models.RegistrationInvite, int64, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -157,18 +157,21 @@ func (s *Store) ListRegistrationInvites(ctx context.Context, query string, limit
 		offset = 0
 	}
 	query = strings.TrimSpace(query)
+	status = strings.TrimSpace(status)
 	var total int64
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM registration_invites
-		WHERE ($1 = '' OR COALESCE(label, '') ILIKE '%'||$1||'%')`, query).Scan(&total); err != nil {
+		WHERE ($1 = '' OR COALESCE(label, '') ILIKE '%'||$1||'%')
+		  AND ($2 = '' OR status = $2)`, query, status).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+inviteCols+`
 		FROM registration_invites
 		WHERE ($1 = '' OR COALESCE(label, '') ILIKE '%'||$1||'%')
+		  AND ($2 = '' OR status = $2)
 		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3`, query, limit, offset)
+		LIMIT $3 OFFSET $4`, query, status, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}

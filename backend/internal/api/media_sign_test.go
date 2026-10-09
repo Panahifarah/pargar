@@ -7,6 +7,24 @@ import (
 	"pargar/backend/internal/config"
 )
 
+func TestStableMediaExpiryHoldsInsideWindow(t *testing.T) {
+	start := time.Unix((1_700_000_000/900)*900, 0)
+	ttl := time.Hour
+	window := 15 * time.Minute
+	a := stableMediaExpiry(start, ttl, window)
+	b := stableMediaExpiry(start.Add(14*time.Minute), ttl, window)
+	if a != b {
+		t.Fatalf("same window should keep one expiry: %d vs %d", a, b)
+	}
+	c := stableMediaExpiry(start.Add(15*time.Minute), ttl, window)
+	if c == a {
+		t.Fatal("next window should mint a new expiry")
+	}
+	if c < a {
+		t.Fatal("expiry should move forward")
+	}
+}
+
 func TestMediaSignatureRoundTrip(t *testing.T) {
 	s := &Server{cfg: &config.Config{JWTSecret: "test-secret-at-least-32-chars-long!!", PublicURL: "http://localhost", MediaURLTTL: time.Hour}}
 	url := s.signMediaURL("videos/lesson-1.mp4")

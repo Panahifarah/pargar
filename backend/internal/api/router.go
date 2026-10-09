@@ -56,7 +56,9 @@ func newRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/chats/conversations", s.requireAuth(s.handleConversations))
 	mux.HandleFunc("GET /api/chats/{partner}/messages", s.requireAuth(s.handleChatMessages))
 	mux.HandleFunc("POST /api/chats/{partner}/messages", s.requireAuth(s.handleChatSend))
+	mux.HandleFunc("PUT /api/chats/{partner}/messages/{id}", s.requireAuth(s.handleChatEdit))
 	mux.HandleFunc("DELETE /api/chats/{partner}/messages/{id}", s.requireAuth(s.handleChatDelete))
+	mux.HandleFunc("GET /api/users/{id}", s.requireAuth(s.handlePublicProfile))
 	mux.HandleFunc("POST /api/chats/{partner}/messages/{id}/reaction", s.requireAuth(s.handleChatReact))
 	mux.HandleFunc("POST /api/chats/{partner}/messages/{id}/pin", s.requireAuth(s.handleChatPin))
 	mux.HandleFunc("POST /api/chats/upload", s.requireAuth(s.perUserRateLimit(uploadRateLimit, "upload", s.handleChatUpload)))
@@ -89,6 +91,7 @@ func newRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/admin/users/{id}/learning", staff(s.handleUserLearning))
 	// Account administration is admin-only; mentors may unlock locked students only.
 	mux.HandleFunc("GET /api/admin/users", admin(s.handleAdminListUsers))
+	mux.HandleFunc("GET /api/admin/users/{id}", admin(s.handleAdminGetUser))
 	mux.HandleFunc("POST /api/admin/users", admin(s.handleAdminCreateUser))
 	mux.HandleFunc("POST /api/admin/users/{id}/lock", admin(s.handleAdminLockUser))
 	mux.HandleFunc("POST /api/admin/users/{id}/unlock", staff(s.handleAdminUnlockUser))
