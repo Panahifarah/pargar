@@ -77,10 +77,12 @@ func SetupTracing(ctx context.Context, cfg Config) (func(context.Context) error,
 	if err != nil {
 		return nil, err
 	}
+	// Schemaless: a non-empty but different schema URL here (from an older
+	// semconv pin) makes resource.Merge fail as soon as the SDK's
+	// resource.Default() schema URL changes across otel upgrades.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			semconv.ServiceName(name),
 		),
 	)
