@@ -1,67 +1,87 @@
-# Pargar
+<p align="center">
+  <img src="frontend/public/logo.png" alt="Pargar mark" width="96" />
+</p>
 
-A gated LMS for bootcamps: verified watch → quiz with hearts → skill-tree unlock → mentor chat, events, weekly league, monthly challenges, and certificates.
+<h1 align="center">Pargar</h1>
 
-| Layer | Stack |
-|-------|--------|
-| API | Go 1.27+ · Postgres · Redis · S3/RustFS · WebSocket |
-| UI | Next.js 15 · React Query · Tailwind · Vazirmatn FD |
-| Edge | Traefik v3.7 (Compose and k3s) |
+<p align="center">
+  <strong>A bootcamp learning path with no shortcuts.</strong><br />
+  Verified watch, quizzes with hearts, a skill tree, and a mentor. The product UI is Persian (پرگار).
+</p>
 
-## Quick start (local)
+<p align="center">
+  <a href="https://github.com/Panahifarah/pargar/releases/tag/v0.1.3"><img src="https://img.shields.io/github/v/tag/Panahifarah/pargar?label=release&color=5B4CDB" alt="release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-5B4CDB" alt="AGPL-3.0" /></a>
+</p>
+
+Pargar is a gated LMS for a bootcamp. A student watches the lesson for real, passes that lesson's quiz, and only then opens the next branch of the skill tree. Alongside the path: mentor chat, events, a weekly league, a monthly challenge, and a certificate.
+
+Public registration sits behind a phone whitelist. Invite links work on their own. Students cannot recover a password themselves; an admin sets a new one from that person's profile.
+
+## The path
+
+| Step | What happens |
+| --- | --- |
+| Verified watch | Watch time is checked with periodic heartbeats. Skipping ahead does not finish the lesson. |
+| Quiz with hearts | Each wrong answer spends a heart. An empty heart meter locks the account until staff reviews it. |
+| Skill tree | The next branch opens only after its parent is passed. Staff unlock the following lesson. |
+| Community | Mentor chat, events, a weekly league that resets on Monday, and a monthly challenge. |
+| Certificate | An unlisted digital link. A physical copy, when enabled, is offline payment only. |
+
+Three roles: a **student** walks the path, a **mentor** sees curriculum and student learning, and an **admin** also manages users, invites, site settings, and physical certificate orders.
+
+Product detail: [docs/product.md](docs/product.md)
+
+## Run it locally
+
+Docker is required. Copy `.env.example` and replace every `replace-with-…` value. The admin password is `ADMIN_PASSWORD`. The default username is `admin`.
 
 ```bash
-cp .env.example .env          # fill in real secrets
+cp .env.example .env
 ./scripts/compose-dev.sh up -d --build
 ```
 
-- App: **https://localhost** (Traefik default cert → one browser warning is expected)
-- Traefik dashboard: http://127.0.0.1:8088
-- Health: `curl -k https://localhost/api/health`
-
-k3s:
+The app is at [https://localhost](https://localhost). Traefik uses its own certificate, so the browser shows one warning. API health:
 
 ```bash
-./scripts/k3s-load-images.sh
-./scripts/helm-k3s.sh
-curl -k https://pargar.local/api/health
+curl -k https://localhost/api/health
 ```
 
-Deployment details: [docs/deployment.md](docs/deployment.md)
+k3s and production: [docs/deployment.md](docs/deployment.md)
 
-## Documentation
+## Stack
 
-| Doc | Contents |
-|-----|----------|
-| [docs/README.md](docs/README.md) | Doc index and reading map |
-| [docs/architecture.md](docs/architecture.md) | System architecture and data flow |
-| [docs/product.md](docs/product.md) | Student / admin paths and features |
-| [docs/development.md](docs/development.md) | Development, tests, code conventions |
-| [docs/deployment.md](docs/deployment.md) | Compose · Helm/k3s · production |
-| [docs/security.md](docs/security.md) | Auth, secrets, rate limits, uploads |
-| [docs/operations.md](docs/operations.md) | Backup, metrics, troubleshooting |
-| [docs/api.md](docs/api.md) | API contract and key routes |
-| [docs/configuration.md](docs/configuration.md) | Environment variable reference |
+| Layer | Technology |
+| --- | --- |
+| API | Go, Postgres, Redis, S3/RustFS, WebSocket |
+| UI | Next.js 15, React, Tailwind |
+| Edge | Traefik, on Compose and Helm |
 
-Domain summary for agents: [CONTEXT.md](CONTEXT.md)
+The browser talks to one origin. Traefik splits the UI from `/api`. Detail: [docs/architecture.md](docs/architecture.md)
 
-## Repository layout
+## Repository
 
 ```text
-backend/          Go API, migrations, seed, media/sample.mp4
-frontend/         Next.js App Router
-deploy/           Compose + Traefik + Helm chart
-scripts/          compose / k3s / backup / regenerate-sample
-docs/             engineering documentation
+backend/     API, migrations, seed data
+frontend/    Next.js UI
+deploy/      Compose, Traefik, Helm chart
+scripts/     Local run, k3s, backup
+docs/        Engineering docs
 ```
 
-## Tests
+| Doc | Read it for |
+| --- | --- |
+| [Product](docs/product.md) | Student path, admin, invites, certificates |
+| [Architecture](docs/architecture.md) | Data flow and service boundaries |
+| [Development](docs/development.md) | Local workflow and tests |
+| [Deployment](docs/deployment.md) | Compose, Helm, production |
+| [Security](docs/security.md) | Sessions, secrets, rate limits, uploads |
+| [Operations](docs/operations.md) | Backup, metrics, troubleshooting |
+| [API](docs/api.md) | Route contract |
+| [Configuration](docs/configuration.md) | Environment variables |
 
-```bash
-cd backend && go test ./internal/api/... ./internal/config/...
-cd frontend && bunx tsc --noEmit
-```
+Index: [docs/README.md](docs/README.md)
 
 ## License
 
-This project is released under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+Released under [AGPL-3.0](LICENSE).
