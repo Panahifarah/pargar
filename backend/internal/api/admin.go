@@ -22,6 +22,20 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"stats": stats})
 }
 
+func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
+	id := routeID(r, "id")
+	if id <= 0 {
+		writeErr(w, http.StatusNotFound, "کاربر پیدا نشد")
+		return
+	}
+	u, err := s.store.GetUserByID(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "کاربر پیدا نشد")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	role := r.URL.Query().Get("role")
@@ -389,25 +403,15 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusForbidden, "دسترسی کافی ندارید")
 		return
 	}
-	target, err := s.store.GetUserByID(r.Context(), id)
-	if err != nil {
+	if _, err := s.store.GetUserByID(r.Context(), id); err != nil {
 		writeErr(w, http.StatusNotFound, "کاربر پیدا نشد")
 		return
 	}
 	var req struct {
-		SecurityAnswer string `json:"securityAnswer"`
-		NewPassword    string `json:"newPassword"`
+		NewPassword string `json:"newPassword"`
 	}
 	if err := bodyJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "دادهٔ ارسالی نامعتبر است")
-		return
-	}
-	if target.SecurityAnswerHash == "" {
-		writeErr(w, http.StatusBadRequest, "برای این کاربر سوال امنیتی تعریف نشده است")
-		return
-	}
-	if !s.auth.CheckPassword(target.SecurityAnswerHash, strings.ToLower(strings.TrimSpace(req.SecurityAnswer))) {
-		writeErr(w, http.StatusForbidden, "جواب سوال امنیتی نادرست است")
 		return
 	}
 	if msg := validatePasswordOnly(req.NewPassword); msg != "" {

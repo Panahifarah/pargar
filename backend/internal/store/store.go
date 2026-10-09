@@ -331,18 +331,15 @@ func (s *Store) HasRegistrationIP(ctx context.Context, ip string) (bool, error) 
 	return exists, err
 }
 
-// RegisterPublicStudent creates a student and consumes the IP atomically.
+// RegisterPublicStudent creates a student and optionally records the client IP.
 // When requireWhitelist is true, the phone must be an available whitelist entry.
-// Concurrent same-IP registrations: one commits; the other rolls back on unique IP conflict.
+// Empty ip skips one-registration-per-IP enforcement (NAT / shared egress).
 func (s *Store) RegisterPublicStudent(
 	ctx context.Context,
 	name, email, username, passwordHash, phone, securityQuestion, securityAnswerHash, ip string,
 	requireWhitelist bool,
 ) (*models.User, error) {
 	ip = strings.TrimSpace(ip)
-	if ip == "" {
-		return nil, errors.New("empty registration ip")
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -355,12 +352,14 @@ func (s *Store) RegisterPublicStudent(
 		return nil, ErrPhoneBlacklisted
 	}
 
-	var taken bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM registration_ips WHERE ip=$1)`, ip).Scan(&taken); err != nil {
-		return nil, err
-	}
-	if taken {
-		return nil, ErrRegistrationIPTaken
+	if ip != "" {
+		var taken bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM registration_ips WHERE ip=$1)`, ip).Scan(&taken); err != nil {
+			return nil, err
+		}
+		if taken {
+			return nil, ErrRegistrationIPTaken
+		}
 	}
 
 	row := tx.QueryRow(ctx, `
@@ -380,12 +379,14 @@ func (s *Store) RegisterPublicStudent(
 		ON CONFLICT (user_id) DO NOTHING`, u.ID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO registration_ips (ip, user_id) VALUES ($1, $2)`, ip, u.ID); err != nil {
-		if isUniqueViolation(err) {
-			return nil, ErrRegistrationIPTaken
+	if ip != "" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO registration_ips (ip, user_id) VALUES ($1, $2)`, ip, u.ID); err != nil {
+			if isUniqueViolation(err) {
+				return nil, ErrRegistrationIPTaken
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -503,7 +504,26 @@ func (s *Store) GetPhysicalOrder(ctx context.Context, id int64) (*models.Certifi
 	return scanPhysicalOrder(row)
 }
 
-func (s *Store) ListPhysicalOrders(ctx context.Context, status string) ([]models.CertificatePhysicalOrder, error) {
+func (s *Store) ListPhysicalOrders(ctx context.Context, status string, limit, offset int) ([]models.CertificatePhysicalOrder, int64, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	where := ""
+	args := []any{}
+	if status != "" {
+		where = ` WHERE o.status=$1`
+		args = append(args, status)
+	}
+	var total int64
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM certificate_physical_orders o`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	q := `
 		SELECT o.id, o.certificate_id, o.user_id, o.status, o.note,
 			o.recipient_name, o.phone, o.address, o.city, o.postal_code, o.tracking_code,
@@ -511,16 +531,11 @@ func (s *Store) ListPhysicalOrders(ctx context.Context, status string) ([]models
 			u.name, c.public_id
 		FROM certificate_physical_orders o
 		JOIN users u ON u.id = o.user_id
-		JOIN certificates c ON c.id = o.certificate_id`
-	args := []any{}
-	if status != "" {
-		q += ` WHERE o.status=$1`
-		args = append(args, status)
-	}
-	q += ` ORDER BY o.created_at DESC LIMIT 200`
+		JOIN certificates c ON c.id = o.certificate_id` + where + ` ORDER BY o.created_at DESC LIMIT $` + strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
+	args = append(args, limit, offset)
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := make([]models.CertificatePhysicalOrder, 0)
@@ -529,11 +544,11 @@ func (s *Store) ListPhysicalOrders(ctx context.Context, status string) ([]models
 		if err := rows.Scan(&o.ID, &o.CertificateID, &o.UserID, &o.Status, &o.Note,
 			&o.RecipientName, &o.Phone, &o.Address, &o.City, &o.PostalCode, &o.TrackingCode,
 			&o.WindowEndsAt, &o.CreatedAt, &o.UpdatedAt, &o.UserName, &o.PublicID); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, o)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 func (s *Store) UpdatePhysicalOrder(ctx context.Context, id int64, status models.PhysicalOrderStatus, note, tracking string) (*models.CertificatePhysicalOrder, error) {
@@ -1068,7 +1083,7 @@ func (s *Store) AddChatMessage(ctx context.Context, userID, mentorID int64, send
 		INSERT INTO chat_messages (user_id, mentor_id, sender_role, body, reply_to, attachment_type, attachment_url, attachment_name, attachment_size)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at`,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
 		userID, mentorID, senderRole.String(), body, replyTo, attType, attURL, attName, attSize)
 	return scanMessage(row)
 }
@@ -1093,7 +1108,7 @@ func (s *Store) ImportChatMessage(ctx context.Context, userID, mentorID int64, s
 		INSERT INTO chat_messages (user_id, mentor_id, sender_role, body, attachment_type, attachment_url, attachment_name, attachment_size, created_at, pinned_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at`,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
 		userID, mentorID, senderRole.String(), body, attType, attURL, attName, attSize, createdAt, pinnedAt)
 	return scanMessage(row)
 }
@@ -1137,6 +1152,48 @@ func (s *Store) DeleteChatMessage(ctx context.Context, meID, partnerID, msgID in
 	return tag.RowsAffected() > 0, nil
 }
 
+// ReplaceChatAttachment swaps the photo, video, or voice on one of my messages and marks it edited.
+// The new type must match the current attachment.
+func (s *Store) ReplaceChatAttachment(ctx context.Context, meID, partnerID, msgID int64, meRole models.Role, body, attType, attURL, attName string, attSize int64) (*models.ChatMessage, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE chat_messages
+		SET body=$1, edited_at=now(),
+		    attachment_type=$2, attachment_url=$3, attachment_name=$4, attachment_size=$5
+		WHERE id=$6
+		  AND ((user_id=$7 AND mentor_id=$8) OR (user_id=$8 AND mentor_id=$7))
+		  AND sender_role=$9
+		  AND (user_id=$7 OR mentor_id=$7)
+		  AND attachment_type=$2
+		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
+		body, attType, attURL, attName, attSize, msgID, meID, partnerID, meRole.String())
+	m, err := scanMessage(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return m, err
+}
+
+// EditChatMessage replaces the body of one of my own messages in this conversation.
+func (s *Store) EditChatMessage(ctx context.Context, meID, partnerID, msgID int64, meRole models.Role, body string) (*models.ChatMessage, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE chat_messages
+		SET body=$1, edited_at=now()
+		WHERE id=$2
+		  AND ((user_id=$3 AND mentor_id=$4) OR (user_id=$4 AND mentor_id=$3))
+		  AND sender_role=$5
+		  AND (user_id=$3 OR mentor_id=$3)
+		  AND ($1 <> '' OR attachment_url IS NOT NULL)
+		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
+		body, msgID, meID, partnerID, meRole.String())
+	m, err := scanMessage(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return m, err
+}
+
 const maxPinnedMessages = 3
 
 // TogglePinChatMessage pins or unpins a message. If already at the pin limit,
@@ -1159,7 +1216,7 @@ func (s *Store) TogglePinChatMessage(ctx context.Context, meID, partnerID, msgID
 		out := s.pool.QueryRow(ctx, `
 			UPDATE chat_messages SET pinned_at=NULL WHERE id=$1
 			RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-				attachment_type, attachment_url, attachment_name, attachment_size, pinned_at`, msgID)
+				attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`, msgID)
 		return scanMessage(out)
 	}
 	var n int
@@ -1187,7 +1244,7 @@ func (s *Store) TogglePinChatMessage(ctx context.Context, meID, partnerID, msgID
 	out := s.pool.QueryRow(ctx, `
 		UPDATE chat_messages SET pinned_at=now() WHERE id=$1
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at`, msgID)
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`, msgID)
 	return scanMessage(out)
 }
 
@@ -1195,7 +1252,7 @@ func (s *Store) TogglePinChatMessage(ctx context.Context, meID, partnerID, msgID
 func (s *Store) ListPinnedChatMessages(ctx context.Context, userID, mentorID int64) ([]models.ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
 		FROM chat_messages
 		WHERE pinned_at IS NOT NULL
 		  AND ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
@@ -1221,7 +1278,7 @@ func (s *Store) ListPinnedChatMessages(ctx context.Context, userID, mentorID int
 func (s *Store) ListChatMessages(ctx context.Context, userID, mentorID, before, limit int64) ([]models.ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
 		FROM chat_messages
 		WHERE ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
 		  AND ($3 = 0 OR id < $3)
@@ -1269,7 +1326,7 @@ func (s *Store) ListChatMessagesAround(ctx context.Context, userID, partnerID, a
 
 	older, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
 		FROM chat_messages
 		WHERE ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
 		  AND id <= $3
@@ -1301,7 +1358,7 @@ func (s *Store) ListChatMessagesAround(ctx context.Context, userID, partnerID, a
 
 	newer, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
 		FROM chat_messages
 		WHERE ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
 		  AND id > $3
@@ -1344,7 +1401,7 @@ func scanMessage(row messageScanner) (*models.ChatMessage, error) {
 	var attSize *int64
 	if err := row.Scan(
 		&m.ID, &m.UserID, &m.MentorID, &m.SenderRole, &m.Body, &m.ReadAt, &m.CreatedAt, &m.ReplyTo,
-		&attType, &attURL, &attName, &attSize, &m.PinnedAt,
+		&attType, &attURL, &attName, &attSize, &m.PinnedAt, &m.EditedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -1371,11 +1428,20 @@ func derefInt(p *int64) int64 {
 	return *p
 }
 
-func (s *Store) MarkChatRead(ctx context.Context, userID, mentorID int64) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE chat_messages SET read_at=now() WHERE (user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1)`,
-		userID, mentorID)
-	return err
+// MarkChatRead stamps messages the other person sent. Opening the thread must not
+// mark my own messages as seen.
+func (s *Store) MarkChatRead(ctx context.Context, meID, partnerID int64, meRole models.Role) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE chat_messages
+		SET read_at=now()
+		WHERE read_at IS NULL
+		  AND sender_role <> $3
+		  AND ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))`,
+		meID, partnerID, meRole.String())
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // MessageInConversation reports whether a message belongs to a given pair.
@@ -1742,7 +1808,7 @@ func (s *Store) AllActiveUserIDs(ctx context.Context) ([]int64, error) {
 
 func (s *Store) Stats(ctx context.Context) (map[string]any, error) {
 	var users, lessons, questions, events, completions int64
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&users); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE role='student' AND is_active`).Scan(&users); err != nil {
 		return nil, err
 	}
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM lessons`).Scan(&lessons); err != nil {

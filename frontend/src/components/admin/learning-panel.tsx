@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Flame,
@@ -34,6 +34,12 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/providers";
 import { cn, formatFaNumber } from "@/lib/utils";
+import {
+  DEFAULT_PAGE_SIZE,
+  ListPagination,
+  buildPageQuery,
+  type Paginated,
+} from "@/components/admin/list-pagination";
 
 type SortKey = "xp" | "progress" | "activity" | "streak";
 type FilterKey = "all" | "active" | "locked";
@@ -58,6 +64,11 @@ export function LearningPanel() {
   const [sort, setSort] = useState<SortKey>("xp");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    setPage(1);
+  }, [q, filter, sort]);
 
   const overviewQ = useQuery({
     queryKey: ["admin", "learning", "overview"],
@@ -66,11 +77,17 @@ export function LearningPanel() {
   });
 
   const studentsQ = useQuery({
-    queryKey: ["admin", "learning", "students", q],
-    queryFn: () =>
-      http.get<{ students: StudentLearningRow[] }>(
-        `/api/admin/learning/students?q=${encodeURIComponent(q)}`
-      ),
+    queryKey: ["admin", "learning", "students", q, filter, sort, page],
+    queryFn: () => {
+      const params = new URLSearchParams(buildPageQuery(page));
+      if (q.trim()) params.set("q", q.trim());
+      if (filter !== "all") params.set("filter", filter);
+      params.set("sort", sort);
+      return http.get<Paginated<StudentLearningRow>>(
+        `/api/admin/learning/students?${params.toString()}`,
+      );
+    },
+    placeholderData: keepPreviousData,
     retry: 1,
   });
 
@@ -98,27 +115,9 @@ export function LearningPanel() {
   };
 
   const overview = overviewQ.data?.overview;
-  const students = useMemo(() => {
-    let rows = [...(studentsQ.data?.students ?? [])];
-    if (filter === "active") rows = rows.filter((r) => r.isActive && !r.isLocked);
-    if (filter === "locked") rows = rows.filter((r) => r.isLocked);
-    rows.sort((a, b) => {
-      switch (sort) {
-        case "progress":
-          return b.progressPct - a.progressPct;
-        case "streak":
-          return b.streakCurrent - a.streakCurrent;
-        case "activity": {
-          const at = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
-          const bt = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
-          return bt - at;
-        }
-        default:
-          return b.xp - a.xp;
-      }
-    });
-    return rows;
-  }, [studentsQ.data?.students, filter, sort]);
+  const students = studentsQ.data?.items ?? [];
+  const studentsTotal = studentsQ.data?.total ?? 0;
+  const studentsPageSize = studentsQ.data?.pageSize ?? DEFAULT_PAGE_SIZE;
 
   const cards = overview
     ? [
@@ -177,7 +176,7 @@ export function LearningPanel() {
           <div>
             <CardTitle className="text-base">جدول هنرجویان</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">
-              {formatFaNumber(students.length)} نفر · برای جزئیات روی ردیف بزنید
+              {formatFaNumber(studentsTotal)} نفر · برای جزئیات روی ردیف بزنید
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -295,6 +294,12 @@ export function LearningPanel() {
               <p className="py-10 text-center text-sm text-muted-foreground">هنرجویی یافت نشد.</p>
             )}
           </div>
+          <ListPagination
+            page={page}
+            pageSize={studentsPageSize}
+            total={studentsTotal}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
 
@@ -305,9 +310,11 @@ export function LearningPanel() {
               {detailQ.data?.learning.user.name ?? "جزئیات یادگیری"}
             </DialogTitle>
             <DialogDescription>
-              {detailQ.data
-                ? `@${detailQ.data.learning.user.username} · ${pct(detailQ.data.learning.user.progressPct)} مسیر`
-                : "در حال بارگذاری…"}
+              {detailQ.isError
+                ? toUserError(detailQ.error, "بارگذاری جزئیات ممکن نشد")
+                : detailQ.data
+                  ? `@${detailQ.data.learning.user.username} · ${pct(detailQ.data.learning.user.progressPct)} مسیر`
+                  : "در حال بارگذاری…"}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-5 px-6 py-5">

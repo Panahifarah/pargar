@@ -142,7 +142,7 @@ export function StatsPanel() {
 
   const s = data?.stats;
   const cards = [
-    { label: "هنرجویان", value: s?.users ?? 0, icon: Users, klass: "text-primary bg-primary/10", hint: "حساب‌های فعال در سامانه" },
+    { label: "هنرجویان", value: s?.users ?? 0, icon: Users, klass: "text-primary bg-primary/10", hint: "هنرجویان با حساب فعال" },
     { label: "درس‌ها", value: s?.lessons ?? 0, icon: BookOpen, klass: "text-secondary bg-secondary/10", hint: "درس‌های ثبت‌شده در درخت" },
     { label: "سوالات", value: s?.questions ?? 0, icon: Activity, klass: "text-accent bg-accent/10", hint: "بانک سوالات آزمون" },
     { label: "رویدادها", value: s?.events ?? 0, icon: CalendarPlus, klass: "text-gold bg-gold/10", hint: "جلسات و کارگاه‌ها" },

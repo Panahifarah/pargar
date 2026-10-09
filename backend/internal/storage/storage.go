@@ -243,10 +243,11 @@ func (s *S3) Serve(w http.ResponseWriter, r *http.Request, key string) error {
 	}
 	defer result.Body.Close()
 
-	ct := mimeType(key)
-	if result.ContentType != nil && *result.ContentType != "" {
-		ct = *result.ContentType
+	stored := ""
+	if result.ContentType != nil {
+		stored = *result.ContentType
 	}
+	ct := mediaContentType(key, stored)
 	w.Header().Set("Content-Type", ct)
 	setInlineMediaHeaders(w, ct)
 	w.Header().Set("Accept-Ranges", "bytes")
@@ -290,13 +291,42 @@ func mimeType(key string) string {
 		return "video/mp4"
 	case ".webm":
 		return "video/webm"
+	case ".weba":
+		return "audio/webm"
 	case ".mp3":
 		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".ogg", ".opus":
+		return "audio/ogg"
+	case ".m4a", ".aac":
+		return "audio/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".m4v":
+		return "video/mp4"
 	case ".pdf":
 		return "application/pdf"
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// mediaContentType keeps a known extension ahead of a generic object-store type.
+// Voice notes are stored as .weba; a default octet-stream plus nosniff stops playback.
+func mediaContentType(key, stored string) string {
+	guessed := mimeType(key)
+	if guessed != "application/octet-stream" {
+		return guessed
+	}
+	stored = strings.TrimSpace(stored)
+	if i := strings.Index(stored, ";"); i >= 0 {
+		stored = strings.TrimSpace(stored[:i])
+	}
+	if stored != "" {
+		return stored
+	}
+	return guessed
 }
 
 // setInlineMediaHeaders discourages "Save as" download UX while keeping streaming/Range intact.

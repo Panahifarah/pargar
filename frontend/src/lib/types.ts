@@ -193,6 +193,7 @@ export interface ChatMessage {
   replyTo?: number;
   pinnedAt?: string;
   pinned?: boolean;
+  editedAt?: string;
   attachment?: ChatAttachment;
   reactions?: ChatReaction[];
 }
@@ -262,6 +263,21 @@ export interface MCQQuestion {
   options: string[];
   answerIndex: number;
   explanation: string;
+}
+
+export interface PublicProfile {
+  id: number;
+  name: string;
+  username: string;
+  role: Role;
+  xp: number;
+  hearts: number;
+  streakCurrent: number;
+  streakLongest: number;
+  avatarVariant?: User["avatarVariant"];
+  avatarPalette?: string;
+  avatarPhoto?: string;
+  isLocked: boolean;
 }
 
 export interface AdminStats {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { http, toUserError } from "@/lib/api";
 import type { CertificatePhysicalOrder, PhysicalCertSettings, PhysicalOrderStatus } from "@/lib/types";
@@ -11,6 +11,11 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/providers";
 import { formatFaNumber } from "@/lib/utils";
+import {
+  DEFAULT_PAGE_SIZE,
+  ListPagination,
+  buildPageQuery,
+} from "@/components/admin/list-pagination";
 
 const STATUS_LABEL: Record<PhysicalOrderStatus, string> = {
   requested: "درخواست‌شده",
@@ -27,16 +32,29 @@ const NEXT: Partial<Record<PhysicalOrderStatus, PhysicalOrderStatus>> = {
 export function PhysicalOrdersPanel() {
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("");
+  const [page, setPage] = useState(1);
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [tracking, setTracking] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<number | null>(null);
 
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter]);
+
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "physical-orders", statusFilter],
-    queryFn: () =>
-      http.get<{ orders: CertificatePhysicalOrder[]; physical: PhysicalCertSettings }>(
-        `/api/admin/physical-orders?status=${encodeURIComponent(statusFilter)}`,
-      ),
+    queryKey: ["admin", "physical-orders", statusFilter, page],
+    queryFn: () => {
+      const params = new URLSearchParams(buildPageQuery(page));
+      if (statusFilter) params.set("status", statusFilter);
+      return http.get<{
+        orders: CertificatePhysicalOrder[];
+        physical: PhysicalCertSettings;
+        total: number;
+        page: number;
+        pageSize: number;
+      }>(`/api/admin/physical-orders?${params.toString()}`);
+    },
+    placeholderData: keepPreviousData,
   });
 
   const update = async (id: number, status: PhysicalOrderStatus) => {
@@ -151,6 +169,12 @@ export function PhysicalOrdersPanel() {
         {!isLoading && (data?.orders ?? []).length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">سفارشی نیست.</p>
         )}
+        <ListPagination
+          page={page}
+          pageSize={data?.pageSize ?? DEFAULT_PAGE_SIZE}
+          total={data?.total ?? 0}
+          onPageChange={setPage}
+        />
       </CardContent>
     </Card>
   );

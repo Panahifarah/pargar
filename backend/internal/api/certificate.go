@@ -228,12 +228,22 @@ func (s *Server) handleRequestPhysicalCertificate(w http.ResponseWriter, r *http
 
 func (s *Server) handleAdminListPhysicalOrders(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
-	orders, err := s.store.ListPhysicalOrders(r.Context(), status)
+	p := parsePageParams(r)
+	orders, total, err := s.store.ListPhysicalOrders(r.Context(), status, p.PageSize, p.Offset)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "بارگذاری سفارش‌ها ممکن نشد")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"orders": orders, "physical": s.physicalSettings(r.Context())})
+	if orders == nil {
+		orders = []models.CertificatePhysicalOrder{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orders":   orders,
+		"total":    total,
+		"page":     p.Page,
+		"pageSize": p.PageSize,
+		"physical": s.physicalSettings(r.Context()),
+	})
 }
 
 func (s *Server) handleAdminUpdatePhysicalOrder(w http.ResponseWriter, r *http.Request) {

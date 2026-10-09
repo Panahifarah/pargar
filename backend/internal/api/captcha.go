@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	captchaTTL             = 5 * time.Minute
+	captchaTTL             = 2 * time.Minute
 	captchaKeyPrefix       = "pargar:captcha:"
 	captchaRateLimit int64 = 60
 	captchaCharset         = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -260,6 +260,7 @@ func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 			resp := map[string]any{
 				"challengeId": "dev",
 				"imageBase64": img,
+				"expiresIn":   int(captchaTTL.Seconds()),
 			}
 			if s.cfg.CaptchaExposeAnswer {
 				resp["answer"] = "A2B3"
@@ -297,6 +298,7 @@ func (s *Server) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"challengeId": id,
 		"imageBase64": img,
+		"expiresIn":   int(captchaTTL.Seconds()),
 	}
 	// Never expose plaintext answers in production. Local tests may opt in via
 	// CAPTCHA_EXPOSE_ANSWER=true combined with DEV_MODE=true.

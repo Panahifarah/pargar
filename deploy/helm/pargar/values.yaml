@@ -44,6 +44,8 @@ backend:
   env:
     devMode: "false"
     seedCurriculum: "false"
+    # false behind NAT / shared egress (peer IP is not a real client).
+    registrationEnforceIP: "false"
     donationEnabled: "true"
     # Offline payment only — leave off until ops process is ready; enable in admin settings.
     physicalCertEnabled: "false"

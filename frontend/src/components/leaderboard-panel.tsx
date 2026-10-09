@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Crown, Sparkles, Timer, Trophy } from "lucide-react";
 import { http, toUserError } from "@/lib/api";
@@ -110,10 +111,11 @@ export function LeaderboardPanel() {
             {rest.map((e) => {
               const isMe = !!user && e.userId === user.id;
               return (
-                <div
+                <Link
                   key={e.userId}
+                  href={`/profile/${e.userId}`}
                   className={cn(
-                    "flex items-center gap-3 rounded-xl border px-4 py-2.5",
+                    "flex items-center gap-3 rounded-xl border px-4 py-2.5 transition-colors hover:bg-muted/40",
                     isMe ? "border-primary/50 bg-primary/5 ring-1 ring-primary/30" : "border-border bg-card"
                   )}
                 >
@@ -135,7 +137,7 @@ export function LeaderboardPanel() {
                   <span className="shrink-0 text-sm font-bold text-gold">
                     {formatFaNumber(Math.round(e.xp))} امتیاز
                   </span>
-                </div>
+                </Link>
               );
             })}
             {rest.length === 0 && entries.length === 0 && (
@@ -197,9 +199,10 @@ function PodiumCard({
 }) {
   const isMe = myId != null && entry.userId === myId;
   return (
-    <div
+    <Link
+      href={`/profile/${entry.userId}`}
       className={cn(
-        "flex flex-col items-center rounded-2xl border-2 border-border bg-card px-3 py-4 text-center shadow-offset-sm",
+        "flex flex-col items-center rounded-2xl border-2 border-border bg-card px-3 py-4 text-center shadow-offset-sm transition-colors hover:bg-muted/40",
         tall ? "pb-6 pt-5" : "pb-4",
         isMe && "border-primary/50 ring-2 ring-primary/30",
         className
@@ -225,7 +228,7 @@ function PodiumCard({
       >
         {entry.rank === 1 ? <Crown className="h-4 w-4" /> : formatFaNumber(entry.rank)}
       </div>
-    </div>
+    </Link>
   );
 }
 

@@ -2,8 +2,8 @@ apiVersion: v2
 name: pargar
 description: Pargar gated LMS - Go API, Next.js frontend, Postgres, Redis, S3-compatible storage
 type: application
-version: 0.2.0
-appVersion: "0.1.0"
+version: 0.2.1
+appVersion: "0.1.3"
 keywords:
   - lms
   - pargar
