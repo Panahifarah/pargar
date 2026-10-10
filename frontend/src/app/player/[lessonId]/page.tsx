@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Lock, TreePine } from "lucide-react";
 import { VideoPlayer } from "@/components/video-player";
+import { NotFoundState, notFoundSentence } from "@/components/not-found-state";
 import { ApiError, http, toUserError } from "@/lib/api";
 import type { Lesson, LessonProgress } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,7 @@ function isLessonLockedError(error: unknown): boolean {
 export default function PlayerPage() {
   const { lessonId } = useParams<{ lessonId: string }>();
   const id = Number(lessonId);
+  const idOk = Number.isFinite(id) && id > 0;
   const router = useRouter();
   const user = useAuth((s) => s.user);
 
@@ -37,7 +39,7 @@ export default function PlayerPage() {
         progress: LessonProgress | null;
         quizStatus: string;
       }>(`/api/lessons/${id}`),
-    enabled: !!user && (!user.isLocked || hasInfiniteHearts(user.role)),
+    enabled: idOk && !!user && (!user.isLocked || hasInfiniteHearts(user.role)),
     staleTime: 5 * 60_000,
     retry: (count, err) => {
       if (isLessonLockedError(err)) return false;
@@ -51,6 +53,17 @@ export default function PlayerPage() {
 
   if (user?.isLocked && !hasInfiniteHearts(user.role)) {
     return null;
+  }
+
+  if (!idOk) {
+    return (
+      <NotFoundState
+        title="درس پیدا نشد"
+        description="این درس در درخت مهارت نیست."
+        href="/cap"
+        actionLabel="بازگشت به درخت مهارت"
+      />
+    );
   }
 
   if (isLoading) {
@@ -78,6 +91,16 @@ export default function PlayerPage() {
   if (isError || !data) {
     if (isLessonLockedError(error)) {
       return <LockedLessonState onBack={() => router.push("/cap")} />;
+    }
+    if (error instanceof ApiError && error.status === 404) {
+      return (
+        <NotFoundState
+          title="درس پیدا نشد"
+          description={notFoundSentence(toUserError(error, ""), "این درس در درخت مهارت نیست.", "درس پیدا نشد")}
+          href="/cap"
+          actionLabel="بازگشت به درخت مهارت"
+        />
+      );
     }
     return (
       <div className="mx-auto max-w-lg space-y-4 py-16 text-center">

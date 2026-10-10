@@ -5,11 +5,17 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
+  ArchiveRestore,
   ArrowDown,
   ArrowRight,
+  Bell,
+  BellOff,
+  Bookmark,
   Check,
   CheckCheck,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ChevronUp,
   Clock,
@@ -19,8 +25,10 @@ import {
   ExternalLink,
   FileText,
   Film,
+  Image as ImageIcon,
   Loader2,
   Maximize,
+  Megaphone,
   MessageSquare,
   Mic,
   Paperclip,
@@ -40,12 +48,12 @@ import {
   X,
 } from "lucide-react";
 import { api, http, getWsUrl, toUserError } from "@/lib/api";
-import { apiFormProgress, saveRemoteFile } from "@/lib/transfer";
+import { apiFormProgress, downloadAllAsZip, saveRemoteFile } from "@/lib/transfer";
 import { mediaObjectKey } from "@/lib/media";
 import { useCachedObjectUrl } from "@/hooks/use-cached-media";
 import type { ChatAttachment, ChatMessage, ChatReaction, Conversation, Mentor } from "@/lib/types";
 import { useAuth } from "@/lib/auth-store";
-import { cn } from "@/lib/utils";
+import { cn, formatJalaliStamp } from "@/lib/utils";
 import { UserAvatar, avatarPropsOf } from "@/components/ui/user-avatar";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -53,6 +61,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { toast } from "@/components/providers";
 import { AppleEmoji, AppleEmojiText } from "@/components/apple-emoji";
 import { softPop, softSpring, softTween } from "@/lib/motion";
+import { isVerifiedRole, VerifiedBadge } from "@/components/verified-badge";
 
 const MAX_LEN = 4000;
 
@@ -110,6 +119,489 @@ function LavaLamp() {
   );
 }
 
+type PeekPreview = {
+  name: string;
+  saved: boolean;
+  partner: Conversation["partner"];
+  messages: ChatMessage[];
+  loading: boolean;
+};
+
+const SWIPE_ACTION_PX = 84;
+const ROW_EASE = "transform 200ms cubic-bezier(0.22,1,0.36,1)";
+
+function ConversationRow({
+  c,
+  rowName,
+  saved,
+  canRaise,
+  nextPinRank,
+  shiftY,
+  lifting,
+  settling,
+  freezeMotion,
+  shellH,
+  onOpen,
+  onRaise,
+  onPinGesture,
+  onArmPeek,
+  onEndPeek,
+  onDisarmPeek,
+  heldRef,
+}: {
+  c: Conversation;
+  rowName: string;
+  saved: boolean;
+  canRaise: boolean;
+  nextPinRank: number;
+  shiftY: number;
+  lifting: boolean;
+  settling: boolean;
+  freezeMotion: boolean;
+  shellH: number;
+  onOpen: () => void;
+  onRaise?: () => void;
+  onPinGesture?: (phase: "start" | "move" | "end" | "cancel", clientY: number) => void;
+  onArmPeek: () => () => void;
+  onEndPeek: () => void;
+  onDisarmPeek: () => void;
+  heldRef: { current: boolean };
+}) {
+  const qc = useQueryClient();
+  const pinGestureRef = useRef(onPinGesture);
+  pinGestureRef.current = onPinGesture;
+  const showPin = !saved;
+  const showArchive = !saved;
+  const showMute = !saved;
+  const actionCount =
+    (showPin ? 1 : 0) + (showArchive ? 1 : 0) + (showMute ? 1 : 0) + (canRaise && onRaise ? 1 : 0);
+  const actionPx = actionCount * SWIPE_ACTION_PX;
+  const revealRef = useRef(0);
+  const [reveal, setReveal] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const skipClick = useRef(false);
+  const rtlRef = useRef(true);
+
+  useEffect(() => {
+    rtlRef.current = document.documentElement.dir !== "ltr";
+  }, []);
+
+  useEffect(() => {
+    setReveal((n) => {
+      const next = Math.min(n, actionPx);
+      revealRef.current = next;
+      return next;
+    });
+  }, [actionPx]);
+
+  const setShift = (n: number) => {
+    const next = Math.max(0, Math.min(actionPx, n));
+    revealRef.current = next;
+    setReveal(next);
+  };
+
+  const savePrefs = (patch: { pinnedRank: number | null; muted: boolean; archived: boolean }) => {
+    void http.put(`/api/chats/${c.partner.id}/prefs`, patch).then(() => qc.invalidateQueries({ queryKey: ["conversations"] }));
+    setShift(0);
+  };
+
+  const yTransition = freezeMotion || (lifting && !settling) ? "none" : ROW_EASE;
+
+  return (
+    <div
+      data-conv={c.partner.id}
+      className="relative"
+      style={lifting ? { height: shellH } : undefined}
+    >
+      <div
+        className={cn(
+          "rounded-[22px]",
+          lifting &&
+            "absolute inset-x-0 top-0 z-30 bg-white shadow-[0_16px_36px_-14px_rgba(42,39,69,0.42)] ring-1 ring-black/10 dark:bg-[#1c1b33] dark:ring-white/10",
+          !lifting && shiftY !== 0 && "bg-white dark:bg-[#1c1b33]",
+        )}
+        style={{
+          transform: `translateY(${shiftY}px)`,
+          transition: yTransition,
+        }}
+      >
+        <div className="overflow-x-hidden rounded-[22px]">
+          <div
+            className="flex"
+            style={{
+              width: `calc(100% + ${actionPx}px)`,
+              transform: `translateX(${rtlRef.current ? reveal : -reveal}px)`,
+              transition: dragging ? "none" : ROW_EASE,
+            }}
+          >
+        <button
+          type="button"
+          draggable={false}
+          onContextMenu={(e) => e.preventDefault()}
+          onClick={() => {
+            if (skipClick.current || heldRef.current) {
+              skipClick.current = false;
+              heldRef.current = false;
+              return;
+            }
+            if (revealRef.current > 0) {
+              setShift(0);
+              return;
+            }
+            onOpen();
+          }}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            onDisarmPeek();
+            const pointerId = e.pointerId;
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const origin = revealRef.current;
+            const handle = e.currentTarget;
+            const reorderable = !!pinGestureRef.current;
+            let axis: "x" | "y" | null = null;
+            let moved = false;
+            let reordering = false;
+            const cancelTimer = onArmPeek();
+            setDragging(true);
+            let reorderArmed = e.pointerType !== "touch";
+            const armTimer =
+              reorderable && !reorderArmed
+                ? window.setTimeout(() => {
+                    reorderArmed = true;
+                  }, 170)
+                : 0;
+
+            const finishListeners = () => {
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+              window.removeEventListener("pointercancel", up);
+              window.removeEventListener("keydown", onKey);
+              if (armTimer) window.clearTimeout(armTimer);
+            };
+            const onKey = (ev: KeyboardEvent) => {
+              if (ev.key !== "Escape" || !reordering) return;
+              ev.preventDefault();
+              finishListeners();
+              cancelTimer();
+              onEndPeek();
+              setDragging(false);
+              pinGestureRef.current?.("cancel", startY);
+              skipClick.current = true;
+              reordering = false;
+            };
+            const move = (ev: PointerEvent) => {
+              if (ev.pointerId !== pointerId) return;
+              const dx = ev.clientX - startX;
+              const dy = ev.clientY - startY;
+              if (!axis) {
+                if (Math.hypot(dx, dy) < 8) return;
+                axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+                moved = true;
+                if (armTimer) window.clearTimeout(armTimer);
+                cancelTimer();
+                onEndPeek();
+                onDisarmPeek();
+                if (axis === "y" && reorderable && reorderArmed && !heldRef.current) {
+                  reordering = true;
+                  setShift(0);
+                  try {
+                    handle.setPointerCapture(pointerId);
+                  } catch {
+                    /* window listeners still track the gesture */
+                  }
+                  pinGestureRef.current?.("start", startY);
+                }
+              }
+              if (axis === "x") {
+                const dir = rtlRef.current ? 1 : -1;
+                setShift(origin + dx * dir);
+                return;
+              }
+              if (!reordering) return;
+              ev.preventDefault();
+              pinGestureRef.current?.("move", ev.clientY);
+            };
+            const up = (ev: PointerEvent) => {
+              if (ev.pointerId !== pointerId && ev.type !== "pointercancel") return;
+              const abort = ev.type === "pointercancel";
+              const didReorder = reordering;
+              finishListeners();
+              cancelTimer();
+              const held = heldRef.current;
+              onEndPeek();
+              setDragging(false);
+              if (didReorder) pinGestureRef.current?.(abort ? "cancel" : "end", ev.clientY);
+              else if (axis === "x") setShift(revealRef.current > actionPx * 0.35 ? actionPx : 0);
+              if (moved || held || didReorder) {
+                skipClick.current = true;
+                heldRef.current = false;
+                const stop = (click: globalThis.MouseEvent) => {
+                  click.preventDefault();
+                  click.stopPropagation();
+                  window.removeEventListener("click", stop, true);
+                };
+                window.addEventListener("click", stop, true);
+                window.setTimeout(() => window.removeEventListener("click", stop, true), 500);
+              }
+            };
+            window.addEventListener("pointermove", move, { passive: false });
+            window.addEventListener("pointerup", up);
+            window.addEventListener("pointercancel", up);
+            window.addEventListener("keydown", onKey);
+          }}
+          style={{ width: `calc(100% - ${actionPx}px)`, touchAction: lifting ? "none" : undefined }}
+          className={cn(
+            "flex min-w-0 touch-pan-y select-none items-center gap-3 rounded-[22px] py-1.5 pe-3 ps-2 text-start text-sm transition-colors hover:bg-white/45 dark:hover:bg-white/[0.06]",
+            lifting && "cursor-grabbing hover:bg-transparent dark:hover:bg-transparent",
+          )}
+        >
+          {saved ? (
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-primary/10 text-primary" aria-hidden>
+              <Bookmark className="h-5 w-5" />
+            </span>
+          ) : (
+            <div className="relative shrink-0">
+              <UserAvatar name={c.partner.name} className="h-11 w-11" {...avatarPropsOf(c.partner)} />
+              <span
+                className={cn(
+                  "absolute -bottom-0.5 -end-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
+                  c.partner.online ? "bg-success" : "bg-muted-foreground/40",
+                )}
+              />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-3">
+              <p className="flex min-w-0 items-center gap-1 font-bold">
+                <span className="truncate">{rowName}</span>
+                {!saved && isVerifiedRole(c.partner.role) && <VerifiedBadge role={c.partner.role} />}
+              </p>
+              <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+                {showPin && c.pinnedRank != null && <Pin className="h-3 w-3" aria-hidden />}
+                {showMute && c.muted && <BellOff className="h-3 w-3" aria-hidden />}
+                {c.lastMessage ? formatJalaliStamp(c.lastMessage.createdAt) : ""}
+              </span>
+            </div>
+            <div className="mt-0.5 flex items-center gap-2">
+              <p
+                dir="auto"
+                className={cn("truncate text-xs", c.unreadCount > 0 ? "font-bold text-foreground" : "text-muted-foreground")}
+              >
+                {c.lastMessage ? previewOf(c.lastMessage) : "هنوز پیامی نیست"}
+              </p>
+              {c.unreadCount > 0 && (
+                <span className="ms-auto grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-accent px-1.5 text-[10px] font-black text-accent-foreground">
+                  {fa(c.unreadCount)}
+                </span>
+              )}
+            </div>
+          </div>
+        </button>
+        {actionCount > 0 && (
+        <div className="flex shrink-0" style={{ width: actionPx }}>
+          {showPin && (
+          <button
+            type="button"
+            aria-label={c.pinnedRank != null ? "برداشتن سنجاق" : "سنجاق"}
+            onClick={() => savePrefs({ pinnedRank: c.pinnedRank == null ? nextPinRank : null, muted: c.muted, archived: c.archived })}
+            style={{ width: SWIPE_ACTION_PX }}
+            className="flex shrink-0 flex-col items-center justify-center gap-1 bg-gold/20 px-1 text-center text-[10px] font-extrabold leading-tight text-foreground"
+          >
+            {c.pinnedRank != null ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+            {c.pinnedRank != null ? "برداشتن" : "سنجاق"}
+          </button>
+          )}
+          {canRaise && onRaise && (
+            <button
+              type="button"
+              aria-label="بالا بردن"
+              onClick={() => {
+                onRaise();
+                setShift(0);
+              }}
+              style={{ width: SWIPE_ACTION_PX }}
+              className="flex shrink-0 flex-col items-center justify-center gap-1 bg-primary/15 px-1 text-center text-[10px] font-extrabold leading-tight text-foreground"
+            >
+              <ChevronUp className="h-4 w-4" />
+              بالا
+            </button>
+          )}
+          {showMute && (
+            <button
+              type="button"
+              aria-label={c.muted ? "باصدا" : "بی‌صدا"}
+              onClick={() => savePrefs({ pinnedRank: c.pinnedRank, muted: !c.muted, archived: c.archived })}
+              style={{ width: SWIPE_ACTION_PX }}
+              className="flex shrink-0 flex-col items-center justify-center gap-1 bg-muted px-1 text-center text-[10px] font-extrabold leading-tight text-foreground"
+            >
+              {c.muted ? <Bell className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+              {c.muted ? "باصدا" : "بی‌صدا"}
+            </button>
+          )}
+          {showArchive && (
+          <button
+            type="button"
+            aria-label={c.archived ? "بازگرداندن" : "آرشیو"}
+            onClick={() => savePrefs({ pinnedRank: c.pinnedRank, muted: c.muted, archived: !c.archived })}
+            style={{ width: SWIPE_ACTION_PX }}
+            className="flex shrink-0 flex-col items-center justify-center gap-1 bg-accent/25 px-1 text-center text-[10px] font-extrabold leading-tight text-foreground"
+          >
+            {c.archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
+            {c.archived ? "بازگرداندن" : "آرشیو"}
+          </button>
+          )}
+        </div>
+        )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PeekThread({
+  messages,
+  role,
+  saved,
+  partner,
+}: {
+  messages: ChatMessage[];
+  role?: string;
+  saved: boolean;
+  partner: Conversation["partner"];
+}) {
+  const shown = messages.slice(-16);
+  const thread = buildThread(shown, role);
+  if (shown.length === 0) return null;
+  return (
+    <div dir="ltr" className="flex h-full flex-col justify-end gap-1">
+      {thread.map((seg, i) =>
+        seg.kind === "date" ? (
+          <div key={`d-${i}`} className="flex justify-center py-1.5">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 py-1 text-[10px] font-bold text-muted-foreground shadow-soft">
+              <span className="h-1 w-1 rounded-full bg-primary/60" />
+              {seg.label}
+            </span>
+          </div>
+        ) : (
+          <div key={`s-${i}`} className="flex w-full items-end gap-1.5">
+            {!seg.mine && !saved && (
+              <UserAvatar name={partner.name} className="mb-0.5 h-7 w-7 shrink-0" {...avatarPropsOf(partner)} />
+            )}
+            <div className={cn("flex w-full min-w-0 max-w-[min(100%,20rem)] flex-col", seg.mine ? "ml-auto items-end" : "mr-auto items-start")}>
+              {seg.msgs.map((m, idx) => (
+                <PeekBubble
+                  key={m.id}
+                  m={m}
+                  mine={seg.mine}
+                  last={idx === seg.msgs.length - 1}
+                  messages={shown}
+                  partnerName={saved ? "پیام‌های ذخیره‌شده" : partner.name}
+                  role={role}
+                />
+              ))}
+            </div>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function PeekBubble({
+  m,
+  mine,
+  last,
+  messages,
+  partnerName,
+  role,
+}: {
+  m: ChatMessage;
+  mine: boolean;
+  last: boolean;
+  messages: ChatMessage[];
+  partnerName: string;
+  role?: string;
+}) {
+  const atts = messageAttachments(m);
+  const multi = atts.length > 1;
+  const mediaOnly = atts.length > 0 && !m.body;
+  const isGif = !multi && mediaOnly && isGifName(atts[0]);
+  const onlyEmoji = !m.replyTo && atts.length === 0 && !!m.body && isSingleEmoji(m.body);
+  return (
+    <div className={cn("relative max-w-full min-w-0", !last && "mb-1")}>
+      <div
+        className={cn(
+          mediaOnly && !isGif
+            ? "overflow-hidden"
+            : onlyEmoji || isGif
+              ? "bg-transparent px-1.5 py-1"
+              : "w-fit min-w-0 max-w-full px-3.5 py-2 text-sm leading-relaxed",
+          !onlyEmoji &&
+            !isGif &&
+            (mine
+              ? cn("bg-primary text-primary-foreground shadow-[0_1px_1px_rgba(0,0,0,0.12)]", last ? "rounded-[18px] rounded-tr-[6px]" : "rounded-[14px]")
+              : cn(
+                  "border border-border/60 bg-card shadow-[0_1px_1px_rgba(0,0,0,0.06)]",
+                  last ? "rounded-[18px] rounded-tl-[6px]" : "rounded-[14px]",
+                )),
+        )}
+      >
+        {multi ? (
+          <>
+            <MultiAttach atts={atts} mine={mine} time={m.createdAt} edited={!!m.editedAt} read={!!m.readAt} inset={!!m.body} showTime={!m.body} />
+            {m.body ? (
+              <p dir="auto" className="chat-bubble-text mt-1">
+                <HighlightBody text={m.body} q="" />
+              </p>
+            ) : null}
+            {m.body && (
+              <span className={cn("mt-1 flex items-center gap-1 text-[10px] leading-none", mine ? "justify-end" : "justify-start")}>
+                {m.editedAt && <span className={cn("opacity-75", mine ? "text-primary-foreground" : "text-muted-foreground")}>ویرایش‌شده</span>}
+                <span className={cn("opacity-75", mine ? "text-primary-foreground" : "text-muted-foreground")}>{clock(m.createdAt)}</span>
+                {mine && <SeenTicks read={!!m.readAt} />}
+              </span>
+            )}
+          </>
+        ) : mediaOnly && isGif ? (
+          <GifSticker att={atts[0]} mine={mine} time={m.createdAt} read={!!m.readAt} edited={!!m.editedAt} />
+        ) : mediaOnly ? (
+          <MediaOnly att={atts[0]} mine={mine} time={m.createdAt} edited={!!m.editedAt} read={!!m.readAt} />
+        ) : onlyEmoji ? (
+          <p dir="auto" className="whitespace-pre-wrap break-words leading-[1.15] [unicode-bidi:plaintext]">
+            <AppleEmoji emoji={m.body!} size={54} />
+          </p>
+        ) : (
+          <>
+            {m.replyTo != null && (
+              <QuoteBox q={messages.find((x) => x.id === m.replyTo) ?? null} mine={mine} partnerName={partnerName} meRole={role} />
+            )}
+            {m.attachment && <AttachmentView att={m.attachment} mine={mine} time={m.createdAt} />}
+            {m.body ? (
+              <p dir="auto" className={cn("chat-bubble-text", m.attachment && "mt-1")}>
+                <HighlightBody text={m.body} q="" />
+              </p>
+            ) : null}
+            {m.body && (
+              <span className={cn("mt-1 flex items-center gap-1 text-[10px] leading-none", mine ? "justify-end" : "justify-start")}>
+                {m.editedAt && <span className={cn("opacity-75", mine ? "text-primary-foreground" : "text-muted-foreground")}>ویرایش‌شده</span>}
+                <span className={cn("opacity-75", mine ? "text-primary-foreground" : "text-muted-foreground")}>{clock(m.createdAt)}</span>
+                {mine && <SeenTicks read={!!m.readAt} />}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+      {!!m.reactions?.length && (
+        <div className={cn("relative z-20 -mt-1.5 w-fit", mine ? "ms-auto -me-1.5" : "me-auto -ms-1.5")}>
+          <ReactChips reactions={m.reactions} mine={mine} onReact={() => undefined} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ChatWidget() {
   const me = useAuth((s) => s.user);
   const qc = useQueryClient();
@@ -119,10 +611,43 @@ export function ChatWidget() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [peek, setPeek] = useState<PeekPreview | null>(null);
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [broadcastAll, setBroadcastAll] = useState(true);
+  const [broadcastIds, setBroadcastIds] = useState<number[]>([]);
+  const [broadcastConfirm, setBroadcastConfirm] = useState(false);
+  const [broadcastBusy, setBroadcastBusy] = useState(false);
+  const [pinDragView, setPinDragView] = useState<{
+    id: number;
+    dy: number;
+    to: number;
+    rowH: number;
+    shellH: number;
+    phase: "drag" | "settle" | "commit";
+  } | null>(null);
+  const pinDragRef = useRef<{
+    id: number;
+    startY: number;
+    from: number;
+    rowH: number;
+    shellH: number;
+    to: number;
+    dy: number;
+    ids: number[];
+    minDy: number;
+    maxDy: number;
+  } | null>(null);
+  const pinEpoch = useRef(0);
+  const pinLandTimer = useRef<number | null>(null);
+  const pendingPinOrder = useRef<number[] | null>(null);
+  const sendBroadcastRef = useRef<(opts?: { attachment?: ChatAttachment | null; skipConfirm?: boolean }) => Promise<void>>(async () => {});
+  const peekToken = useRef(0);
+  const peekArmed = useRef(false);
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState<ChatMessage[]>([]);
   const [partnerTyping, setPartnerTyping] = useState(false);
-  const [attPref, setAttPref] = useState<ChatAttachment | null>(null);
+  const [attPref, setAttPref] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
   const [notif, setNotif] = useState<{ id: string; partner: number; name: string; body: string } | null>(null);
@@ -146,12 +671,16 @@ export function ChatWidget() {
   const [flashId, setFlashId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [editAdds, setEditAdds] = useState<ChatAttachment[]>([]);
+  const [editRemoved, setEditRemoved] = useState<number[]>([]);
+  const [editReplacements, setEditReplacements] = useState<Record<number, ChatAttachment>>({});
   const [editBusy, setEditBusy] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const replaceRef = useRef<HTMLInputElement>(null);
-  const replaceTarget = useRef<ChatMessage | null>(null);
+  const photoRef = useRef<HTMLInputElement>(null);
+  const editFileRef = useRef<HTMLInputElement>(null);
+  const editPick = useRef<{ mode: "add" | "replace"; index: number }>({ mode: "add", index: 0 });
   const wsRef = useRef<WebSocket | null>(null);
   const typingSentAt = useRef(0);
   const typingClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -168,13 +697,42 @@ export function ChatWidget() {
   const convRef = useRef<Conversation[]>([]);
 
   const convQuery = useQuery({
-        queryKey: ["conversations"],
-        queryFn: () => http.get<{ conversations: Conversation[] }>("/api/chats/conversations"),
+        queryKey: ["conversations", showArchived, me?.id],
+        queryFn: async () => {
+          type ConvPayload = { conversations: Conversation[]; mutedAll?: boolean };
+          const data = await http.get<ConvPayload>(
+            `/api/chats/conversations${showArchived ? "?archived=1" : ""}`,
+          );
+          const meId = me?.id;
+          if (meId == null) return data;
+          const rest = data.conversations.filter((c) => c.partner.id !== meId);
+          if (showArchived) return { ...data, conversations: rest };
+          let saved = data.conversations.find((c) => c.partner.id === meId);
+          if (!saved?.lastMessage) {
+            try {
+              const archived = await http.get<ConvPayload>("/api/chats/conversations?archived=1");
+              const rescued = archived.conversations.find((c) => c.partner.id === meId);
+              if (rescued) saved = rescued;
+            } catch {
+              /* inbox row still stands in for saved messages */
+            }
+          }
+          if (!saved) return { ...data, conversations: rest };
+          return { ...data, conversations: [{ ...saved, archived: false }, ...rest] };
+        },
         refetchInterval: 20_000,
       });
   const convData = convQuery.data;
   const convLoading = convQuery.isPending;
-  const conversations = convData?.conversations ?? [];
+  const conversations = useMemo(() => {
+    const list = convData?.conversations ?? [];
+    const meId = me?.id;
+    if (meId == null) return list;
+    const saved = list.find((c) => c.partner.id === meId);
+    const rest = list.filter((c) => c.partner.id !== meId);
+    if (showArchived || !saved) return rest;
+    return [{ ...saved, archived: false }, ...rest];
+  }, [convData?.conversations, showArchived, me?.id]);
   convRef.current = conversations;
   const unreadTotal = useMemo(
     () => conversations.reduce((n, c) => n + (c.unreadCount > 0 ? c.unreadCount : 0), 0),
@@ -183,7 +741,7 @@ export function ChatWidget() {
 
   const { data: loveList } = useQuery({
     queryKey: ["mentors"],
-    queryFn: () => http.get<{ mentors: Mentor[] }>("/api/mentors"),
+    queryFn: () => http.get<{ mentors: Mentor[]; total: number }>("/api/mentors?page=1&pageSize=50"),
     enabled: !active && open,
   });
 
@@ -235,7 +793,8 @@ export function ChatWidget() {
     return msgs
       .filter(
         (m) =>
-          !!m.body && normText(m.body).includes(q0) || (!!m.attachment?.name && normText(m.attachment.name).includes(q0))
+          (!!m.body && normText(m.body).includes(q0)) ||
+          messageAttachments(m).some((a) => !!a.name && normText(a.name).includes(q0))
       )
       .map((m) => m.id);
   }, [msgs, msgQuery]);
@@ -290,19 +849,41 @@ export function ChatWidget() {
     }
   };
 
+  const closeEdit = () => {
+    setEditingId(null);
+    setEditDraft("");
+    setEditAdds([]);
+    setEditRemoved([]);
+    setEditReplacements({});
+  };
+
   const saveEdit = async () => {
     if (!active || editingId == null || editBusy) return;
+    const current = msgs.find((m) => m.id === editingId);
+    const original = current ? messageAttachments(current) : [];
+    const kept = original.filter((_, index) => !editRemoved.includes(index));
     const body = editDraft.trim();
-    if (!body || body.length > MAX_LEN) {
+    if (body.length > MAX_LEN) {
       toast.error("پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد");
       return;
     }
+    if (!body && kept.length === 0 && editAdds.length === 0) {
+      toast.error("پیام باید متن یا پیوست داشته باشد");
+      return;
+    }
+    const replacements = Object.entries(editReplacements)
+      .filter(([index]) => !editRemoved.includes(Number(index)))
+      .map(([index, attachment]) => ({ index: Number(index), attachment }));
     setEditBusy(true);
     try {
-      const res = await http.put<{ message: ChatMessage }>(`/api/chats/${active}/messages/${editingId}`, { body });
+      const res = await http.put<{ message: ChatMessage }>(`/api/chats/${active}/messages/${editingId}`, {
+        body,
+        ...(editAdds.length ? { addAttachments: editAdds } : {}),
+        ...(editRemoved.length ? { removeIndexes: editRemoved } : {}),
+        ...(replacements.length ? { replacements } : {}),
+      });
       applyEdited(res.message);
-      setEditingId(null);
-      setEditDraft("");
+      closeEdit();
       qc.invalidateQueries({ queryKey: ["conversations"] });
     } catch (err) {
       toast.error(toUserError(err, "ویرایش ممکن نشد"));
@@ -506,6 +1087,9 @@ export function ChatWidget() {
     setMatchIdx(0);
     setEditingId(null);
     setEditDraft("");
+    setEditAdds([]);
+    setEditRemoved([]);
+    setEditReplacements({});
     if (pendingDraftRef.current != null) {
       const d = pendingDraftRef.current;
       pendingDraftRef.current = null;
@@ -565,7 +1149,7 @@ ws.onmessage = (ev) => {
             const activeThread = !!activeRef.current && activeRef.current === p.from;
             if (!activeThread) {
               const conv = convRef.current.find((c) => c.partner.id === p.from);
-              if (conv) {
+              if (conv && !conv.muted) {
                 setNotif({
                   id: `${Date.now()}-${p.from}`,
                   partner: p.from ?? 0,
@@ -640,11 +1224,12 @@ ws.onmessage = (ev) => {
     conversations.find((c) => c.partner.id === active)?.partner ??
     (loveList?.mentors ?? []).find((m) => m.id === active);
 
-  const send = async (text?: string, att?: ChatAttachment | null) => {
+  const send = async (text?: string, att?: ChatAttachment | ChatAttachment[] | null) => {
     const body = (text ?? draft).trim();
-    if (!active || (!body && !att && !attPref) || body.length > MAX_LEN || sending) return;
+    const attachments = pickedAttachments(att, attPref);
+    if (!active || (!body && attachments.length === 0) || body.length > MAX_LEN || sending) return;
     setSending(true);
-    const attachment = att ?? attPref ?? undefined;
+    const attachment = attachments[0];
     const quoteId = replyTo?.id;
     const uid = useAuth.getState().user;
     const temp: ChatMessage = {
@@ -654,19 +1239,23 @@ ws.onmessage = (ev) => {
       senderRole: (uid?.role ?? "student") as ChatMessage["senderRole"],
       body,
       createdAt: new Date().toISOString(),
-      ...(attachment ? { attachment } : {}),
+      ...(attachment ? { attachment, attachments } : {}),
       ...(quoteId ? { replyTo: quoteId } : {}),
     };
     setDraft("");
-    setAttPref(null);
+    setAttPref([]);
     setReplyTo(null);
     setHistoryAnchor(null);
     wasNearBottomRef.current = true;
     setPending((p) => [...p, temp]);
-try {
+    try {
       const res = await api<{ message: ChatMessage }>(`/api/chats/${active}/messages`, {
         method: "POST",
-        body: { body, attachment, replyTo: quoteId },
+        body: {
+          body,
+          replyTo: quoteId,
+          ...(attachment ? { attachment, attachments } : {}),
+        },
       });
       qc.setQueryData<{ messages: ChatMessage[]; hasMore: boolean }>(["chat", active], (old) => {
         const list = old?.messages ?? [];
@@ -680,7 +1269,7 @@ try {
     } catch (err) {
       setPending([]);
       setDraft(body);
-      setAttPref(attachment ?? null);
+      setAttPref(attachments);
       setReplyTo(replyTo);
       toast.error((err as Error).message || "ارسال ممکن نشد");
     } finally {
@@ -689,18 +1278,40 @@ try {
   };
 
   const pickFile = () => fileRef.current?.click();
+  const pickPhotos = () => photoRef.current?.click();
 
-  const uploadSelected = async (file: File) => {
-    if (file.size > 25 * 1024 * 1024) {
-      toast.error("فایل باید کمتر از ۲۵ مگابایت باشد");
+  const uploadSelected = async (files: File[]) => {
+    const room = maxChatAttachments - attPref.length;
+    if (room <= 0) {
+      toast.error("در هر پیام حداکثر ۱۰ پیوست می‌توان فرستاد");
       return;
     }
+    const batch = files.slice(0, room);
+    if (files.length > room) toast.error("در هر پیام حداکثر ۱۰ پیوست می‌توان فرستاد");
+    const accepted = batch.filter((file) => {
+      if (file.size > 25 * 1024 * 1024) {
+        toast.error("فایل باید کمتر از ۲۵ مگابایت باشد");
+        return false;
+      }
+      return true;
+    });
+    if (!accepted.length) return;
     setUploading(true);
     setUploadPct(0);
+    const added: ChatAttachment[] = [];
     try {
-      const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(file), setUploadPct);
-      setAttPref(attachment);
+      for (let i = 0; i < accepted.length; i++) {
+        const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>(
+          "/api/chats/upload",
+          toForm(accepted[i]),
+          (ratio) => setUploadPct((i + ratio) / accepted.length),
+        );
+        added.push(attachment);
+      }
+      setAttPref((prev) => [...prev, ...added].slice(0, maxChatAttachments));
+      setBroadcastConfirm(false);
     } catch (err) {
+      if (added.length) setAttPref((prev) => [...prev, ...added].slice(0, maxChatAttachments));
       toast.error((err as Error).message || "آپلود ممکن نشد");
     } finally {
       setUploading(false);
@@ -708,47 +1319,92 @@ try {
   };
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
-    if (file) await uploadSelected(file);
+    if (files.length) await uploadSelected(files);
   };
 
-  const beginReplace = (m: ChatMessage) => {
-    const kind = m.attachment?.type;
-    if (kind !== "image" && kind !== "video" && kind !== "audio") return;
-    replaceTarget.current = m;
-    const input = replaceRef.current;
+  const editAccept = "image/*,video/*,audio/*,.pdf,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json";
+
+  const beginEditAdd = () => {
+    if (editingId == null) return;
+    const current = msgs.find((m) => m.id === editingId);
+    const original = current ? messageAttachments(current) : [];
+    const room = maxChatAttachments - (original.length - editRemoved.length + editAdds.length);
+    if (room <= 0) {
+      toast.error("در هر پیام حداکثر ۱۰ پیوست می‌توان فرستاد");
+      return;
+    }
+    editPick.current = { mode: "add", index: 0 };
+    const input = editFileRef.current;
     if (!input) return;
-    input.accept = kind === "image" ? "image/*" : kind === "video" ? "video/*" : "audio/*";
+    input.accept = editAccept;
+    input.multiple = true;
     input.click();
   };
 
-  const onReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const beginEditReplace = (index: number) => {
+    if (editingId == null) return;
+    const current = msgs.find((m) => m.id === editingId);
+    const att = current ? messageAttachments(current)[index] : undefined;
+    if (!att) return;
+    editPick.current = { mode: "replace", index };
+    const input = editFileRef.current;
+    if (!input) return;
+    input.multiple = false;
+    input.accept =
+      att.type === "image" ? "image/*" : att.type === "video" ? "video/*" : att.type === "audio" ? "audio/*" : editAccept;
+    input.click();
+  };
+
+  const onEditPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
-    const target = replaceTarget.current;
-    replaceTarget.current = null;
-    if (!file || !target || !active) return;
-    if (file.size > 25 * 1024 * 1024) {
-      toast.error("فایل باید کمتر از ۲۵ مگابایت باشد");
-      return;
-    }
+    const pick = editPick.current;
+    if (!files.length || editingId == null) return;
+    const current = msgs.find((m) => m.id === editingId);
+    const original = current ? messageAttachments(current) : [];
+    const room = maxChatAttachments - (original.length - editRemoved.length + editAdds.length);
+    const batch = pick.mode === "replace" ? files.slice(0, 1) : files.slice(0, Math.max(room, 0));
+    if (pick.mode === "add" && files.length > batch.length) toast.error("در هر پیام حداکثر ۱۰ پیوست می‌توان فرستاد");
+    const accepted = batch.filter((file) => {
+      if (file.size > 25 * 1024 * 1024) {
+        toast.error("فایل باید کمتر از ۲۵ مگابایت باشد");
+        return false;
+      }
+      return true;
+    });
+    if (!accepted.length) return;
     setUploading(true);
     setUploadPct(0);
     try {
-      const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(file), setUploadPct);
-      if (attachment.type !== target.attachment?.type) {
-        toast.error("فایل جدید باید از همان نوع باشد");
+      if (pick.mode === "replace") {
+        const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>(
+          "/api/chats/upload",
+          toForm(accepted[0]),
+          setUploadPct,
+        );
+        const prev = original[pick.index];
+        if (!prev || attachment.type !== prev.type) {
+          toast.error("فایل جدید باید از همان نوع باشد");
+          return;
+        }
+        setEditReplacements((cur) => ({ ...cur, [pick.index]: attachment }));
+        setEditRemoved((cur) => cur.filter((index) => index !== pick.index));
         return;
       }
-      const res = await http.put<{ message: ChatMessage }>(`/api/chats/${active}/messages/${target.id}`, {
-        body: target.body ?? "",
-        attachment,
-      });
-      applyEdited(res.message);
-      qc.invalidateQueries({ queryKey: ["conversations"] });
+      const added: ChatAttachment[] = [];
+      for (let i = 0; i < accepted.length; i++) {
+        const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>(
+          "/api/chats/upload",
+          toForm(accepted[i]),
+          (ratio) => setUploadPct((i + ratio) / accepted.length),
+        );
+        added.push(attachment);
+      }
+      setEditAdds((prev) => [...prev, ...added].slice(0, maxChatAttachments));
     } catch (err) {
-      toast.error(toUserError(err, "جایگذاری ممکن نشد"));
+      toast.error(toUserError(err, "آپلود ممکن نشد"));
     } finally {
       setUploading(false);
     }
@@ -795,16 +1451,18 @@ try {
     setRecDur(0);
   };
 
-  const sendVoice = async () => {
+  const sendVoice = async (opts?: { broadcast?: boolean }) => {
     const blob = recBlob;
     const mime = recMime;
-    if (!blob || !active || sending || uploading) return;
+    if (!blob || sending || uploading) return;
+    if (!opts?.broadcast && !active) return;
     cancelVoicePreview();
     setUploading(true);
     setUploadPct(0);
     try {
       const { attachment } = await apiFormProgress<{ attachment: ChatAttachment }>("/api/chats/upload", toForm(blob, mime), setUploadPct);
-      await send("", attachment);
+      if (opts?.broadcast) await sendBroadcastRef.current({ attachment, skipConfirm: true });
+      else await send("", attachment);
     } catch (err) {
       toast.error((err as Error).message || "ارسال صوتی ممکن نشد");
     } finally {
@@ -898,18 +1556,178 @@ try {
     }
   };
 
+  useEffect(() => {
+    try {
+      localStorage.removeItem("pargar-chat-pin");
+      sessionStorage.removeItem("pargar-chat-unlocked");
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+
   const sortedConvs = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = [...conversations].sort((a, b) => {
+      if ((a.partner.id === me?.id) !== (b.partner.id === me?.id)) return a.partner.id === me?.id ? -1 : 1;
+      const ap = a.pinnedRank;
+      const bp = b.pinnedRank;
+      if ((ap != null) !== (bp != null)) return ap != null ? -1 : 1;
+      if (ap != null && bp != null && ap !== bp) return ap - bp;
       const ta = a.lastMessage ? new Date(a.lastMessage.createdAt).getTime() : 0;
       const tb = b.lastMessage ? new Date(b.lastMessage.createdAt).getTime() : 0;
       return tb - ta;
     });
     if (!q) return list;
     return list.filter(
-      (c) => c.partner.name.toLowerCase().includes(q) || (c.lastMessage?.body ?? "").toLowerCase().includes(q)
+      (c) => c.partner.name.toLowerCase().includes(q) || (c.partner.id === me?.id && "پیام‌های ذخیره‌شده".includes(q)) || (c.lastMessage?.body ?? "").toLowerCase().includes(q)
     );
-  }, [conversations, query]);
+  }, [conversations, query, me?.id]);
+
+  const orderedPeople = useMemo(() => {
+    const list = (loveList?.mentors ?? []).filter((person) => person.id !== me?.id);
+    return list.slice().sort((a, b) => {
+      const onlineDelta = Number(!!b.online) - Number(!!a.online);
+      if (onlineDelta !== 0) return onlineDelta;
+      return a.name.localeCompare(b.name, "fa");
+    });
+  }, [loveList?.mentors, me?.id]);
+
+  const pinOrderIds = useMemo(
+    () => sortedConvs.filter((c) => c.pinnedRank != null && c.partner.id !== me?.id).map((c) => c.partner.id),
+    [sortedConvs, me?.id],
+  );
+
+  const rowShift = (id: number) => {
+    if (!pinDragView || pinDragView.phase === "commit") return 0;
+    const from = pinOrderIds.indexOf(pinDragView.id);
+    const index = pinOrderIds.indexOf(id);
+    if (from < 0 || index < 0) return 0;
+    if (id === pinDragView.id) return pinDragView.dy;
+    if (from < pinDragView.to && index > from && index <= pinDragView.to) return -pinDragView.rowH;
+    if (pinDragView.to < from && index >= pinDragView.to && index < from) return pinDragView.rowH;
+    return 0;
+  };
+
+  const persistPinOrder = async (ids: number[]) => {
+    const byId = new Map(conversations.map((c) => [c.partner.id, c]));
+    qc.setQueryData<{ conversations: Conversation[] }>(["conversations", showArchived, me?.id], (old) => {
+      if (!old) return old;
+      const rank = new Map(ids.map((id, index) => [id, index]));
+      return {
+        ...old,
+        conversations: old.conversations.map((c) => (rank.has(c.partner.id) ? { ...c, pinnedRank: rank.get(c.partner.id)! } : c)),
+      };
+    });
+    try {
+      await Promise.all(
+        ids.map((id, index) => {
+          const row = byId.get(id);
+          if (!row || row.pinnedRank === index) return Promise.resolve();
+          return http.put(`/api/chats/${id}/prefs`, { pinnedRank: index, muted: row.muted, archived: row.archived });
+        }),
+      );
+    } catch (err) {
+      toast.error(toUserError(err, "جابه‌جایی سنجاق ممکن نشد"));
+    } finally {
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+    }
+  };
+
+  const raisePin = (id: number) => {
+    const index = pinOrderIds.indexOf(id);
+    if (index <= 0) return;
+    const next = [...pinOrderIds];
+    const previous = next[index - 1];
+    next[index - 1] = next[index]!;
+    next[index] = previous!;
+    void persistPinOrder(next);
+  };
+
+  const onPinGesture = (row: Conversation, phase: "start" | "move" | "end" | "cancel", clientY: number) => {
+    if (phase === "start") {
+      if (pinLandTimer.current != null || pendingPinOrder.current) {
+        if (pinLandTimer.current != null) {
+          window.clearTimeout(pinLandTimer.current);
+          pinLandTimer.current = null;
+        }
+        pinEpoch.current += 1;
+        const pending = pendingPinOrder.current;
+        pendingPinOrder.current = null;
+        if (pending) void persistPinOrder(pending);
+        setPinDragView(null);
+        return;
+      }
+      const ids = pinOrderIds;
+      const from = ids.indexOf(row.partner.id);
+      if (from < 0) return;
+      const el = document.querySelector(`[data-conv="${row.partner.id}"]`) as HTMLElement | null;
+      const rect = el?.getBoundingClientRect();
+      const shellH = el?.offsetHeight || Math.round(rect?.height ?? 64) || 64;
+      let rowH = shellH + 2;
+      if (el && rect) {
+        const next = el.nextElementSibling as HTMLElement | null;
+        if (next) rowH = Math.max(shellH, next.getBoundingClientRect().top - rect.top);
+        else {
+          const prev = el.previousElementSibling as HTMLElement | null;
+          if (prev) rowH = Math.max(shellH, rect.top - prev.getBoundingClientRect().top);
+        }
+      }
+      const list = el?.closest(".chat-scroll") as HTMLElement | null;
+      const listRect = list?.getBoundingClientRect();
+      const minDy = rect && listRect ? Math.min(0, listRect.top + 2 - rect.top) : -2000;
+      const maxDy = rect && listRect ? Math.max(0, listRect.bottom - 2 - rect.bottom) : 2000;
+      pinDragRef.current = { id: row.partner.id, startY: clientY, from, rowH, shellH, to: from, dy: 0, ids, minDy, maxDy };
+      setPinDragView({ id: row.partner.id, dy: 0, to: from, rowH, shellH, phase: "drag" });
+      return;
+    }
+    const drag = pinDragRef.current;
+    if (!drag || drag.id !== row.partner.id) return;
+    if (phase === "move") {
+      const dy = Math.max(drag.minDy, Math.min(drag.maxDy, clientY - drag.startY));
+      const slots = Math.round(dy / drag.rowH);
+      const to = Math.max(0, Math.min(drag.ids.length - 1, drag.from + slots));
+      drag.to = to;
+      drag.dy = dy;
+      setPinDragView({ id: drag.id, dy, to, rowH: drag.rowH, shellH: drag.shellH, phase: "drag" });
+      return;
+    }
+    pinDragRef.current = null;
+    const shouldCommit = phase === "end" && drag.to !== drag.from;
+    const epoch = ++pinEpoch.current;
+    const targetDy = shouldCommit ? (drag.to - drag.from) * drag.rowH : 0;
+    const targetTo = shouldCommit ? drag.to : drag.from;
+    const nextOrder = (() => {
+      if (!shouldCommit) return null;
+      const next = [...drag.ids];
+      const [moved] = next.splice(drag.from, 1);
+      if (moved == null) return null;
+      next.splice(drag.to, 0, moved);
+      return next;
+    })();
+    const land = () => {
+      if (pinEpoch.current !== epoch) return;
+      pinLandTimer.current = null;
+      pendingPinOrder.current = null;
+      if (nextOrder) void persistPinOrder(nextOrder);
+      setPinDragView({ id: drag.id, dy: 0, to: drag.from, rowH: drag.rowH, shellH: drag.shellH, phase: "commit" });
+      requestAnimationFrame(() => {
+        if (pinEpoch.current !== epoch) return;
+        setPinDragView((cur) => (cur?.phase === "commit" ? null : cur));
+      });
+    };
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || Math.abs(drag.dy - targetDy) < 0.5) {
+      land();
+      return;
+    }
+    pendingPinOrder.current = nextOrder;
+    setPinDragView({ id: drag.id, dy: drag.dy, to: targetTo, rowH: drag.rowH, shellH: drag.shellH, phase: "settle" });
+    requestAnimationFrame(() => {
+      if (pinEpoch.current !== epoch) return;
+      setPinDragView((cur) => (cur && cur.phase === "settle" && cur.id === drag.id ? { ...cur, dy: targetDy } : cur));
+      pinLandTimer.current = window.setTimeout(land, 240);
+    });
+  };
 
   const CHAT_PAGE = 40;
   const view = useMemo(() => {
@@ -978,6 +1796,88 @@ try {
     );
     setOlder((prev) => prev.map((m) => (m.id === item.id ? item : m)));
   };
+  const broadcastNames = useMemo(() => {
+    const people = loveList?.mentors ?? [];
+    return broadcastIds.flatMap((id) => {
+      const person = people.find((item) => item.id === id);
+      return person ? [person.name] : [];
+    });
+  }, [broadcastIds, loveList?.mentors]);
+
+  const broadcastTargetIds = async () => {
+    if (!broadcastAll) return broadcastIds.filter((id) => id !== me?.id);
+    const ids: number[] = [];
+    let page = 1;
+    let total = 0;
+    do {
+      const res = await http.get<{ mentors: Mentor[]; total: number }>(`/api/mentors?page=${page}&pageSize=50`);
+      total = res.total ?? 0;
+      for (const person of res.mentors ?? []) {
+        if (person.id !== me?.id) ids.push(person.id);
+      }
+      if ((res.mentors ?? []).length === 0 || page * 50 >= total) break;
+      page += 1;
+    } while (page <= 40);
+    return ids;
+  };
+
+  const sendBroadcast = async (opts?: { attachment?: ChatAttachment | null; attachments?: ChatAttachment[]; skipConfirm?: boolean }) => {
+    const body = draft.trim();
+    const attachments = opts?.attachments ?? pickedAttachments(opts?.attachment, attPref);
+    const attachment = attachments[0];
+    if (broadcastBusy) return;
+    if (!body && attachments.length === 0) return;
+    if (broadcastAll) {
+      if (!broadcastConfirm && !opts?.skipConfirm) return;
+    } else if (broadcastIds.length === 0) {
+      return;
+    }
+    setBroadcastBusy(true);
+    try {
+      if (!attachment) {
+        await http.post("/api/chats/broadcast", { body, all: broadcastAll, userIds: broadcastAll ? [] : broadcastIds });
+      } else {
+        const ids = await broadcastTargetIds();
+        for (let i = 0; i < ids.length; i += 4) {
+          const chunk = ids.slice(i, i + 4);
+          await Promise.all(
+            chunk.map((id) =>
+              api(`/api/chats/${id}/messages`, { method: "POST", body: { body, attachment, attachments } }),
+            ),
+          );
+        }
+      }
+      setBroadcastOpen(false);
+      setBroadcastConfirm(false);
+      setBroadcastAll(true);
+      setBroadcastIds([]);
+      setDraft("");
+      setAttPref([]);
+      setEmojiOpen(false);
+      cancelVoicePreview();
+      toast.success("ارسال شد");
+      qc.invalidateQueries({ queryKey: ["conversations"] });
+    } catch (err) {
+      toast.error(toUserError(err, "ارسال ممکن نشد"));
+    } finally {
+      setBroadcastBusy(false);
+    }
+  };
+  sendBroadcastRef.current = sendBroadcast;
+
+  const armBroadcast = () => {
+    if (broadcastBusy || uploading || sending) return;
+    const ready = !!draft.trim() || attPref.length > 0 || !!recBlob;
+    if (!ready) return;
+    if (!broadcastAll && broadcastIds.length === 0) return;
+    if (broadcastAll && !broadcastConfirm) {
+      setBroadcastConfirm(true);
+      return;
+    }
+    if (recBlob) void sendVoice({ broadcast: true });
+    else void sendBroadcast();
+  };
+
   const atLimit = draft.length >= MAX_LEN;
   const recording = !!voiceRef.current?.recorder && voiceRef.current.recorder.state === "recording";
 
@@ -988,6 +1888,38 @@ try {
     }
     return null;
   }, [msgs, me]);
+
+  const savedChat = !!partner && partner.id === me?.id;
+
+  const disarmPeek = () => {
+    peekArmed.current = false;
+  };
+
+  const endPeek = () => {
+    peekToken.current += 1;
+    setPeek(null);
+  };
+
+  const armPeek = (c: Conversation, rowName: string) => {
+    const token = ++peekToken.current;
+    const saved = c.partner.id === me?.id;
+    const timer = window.setTimeout(() => {
+      if (peekToken.current !== token) return;
+      peekArmed.current = true;
+      setPeek({ name: rowName, saved, partner: c.partner, messages: [], loading: true });
+      void http
+        .get<{ messages: ChatMessage[] }>(`/api/chats/${c.partner.id}/peek`)
+        .then((res) => {
+          if (peekToken.current !== token) return;
+          setPeek({ name: rowName, saved, partner: c.partner, messages: res.messages ?? [], loading: false });
+        })
+        .catch(() => {
+          if (peekToken.current !== token) return;
+          setPeek((cur) => (cur ? { ...cur, loading: false, messages: [] } : null));
+        });
+    }, 480);
+    return () => window.clearTimeout(timer);
+  };
 
   return (
     <>
@@ -1019,40 +1951,69 @@ try {
               <div aria-hidden className="pointer-events-none absolute -start-16 -top-10 h-36 w-36 rounded-full bg-primary/20 blur-3xl" />
 
               <div className="relative flex items-center gap-3 border-b-2 border-white/50 bg-white/30 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-white/5">
-                {active && partner ? (
+                {broadcastOpen && !active ? (
                   <>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => setActive(null)}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-lg"
+                      aria-label="بازگشت"
+                      onClick={() => {
+                        setBroadcastOpen(false);
+                        setBroadcastConfirm(false);
+                      }}
+                    >
                       <ChevronRight className="h-4 w-4" />
                     </Button>
-                    <button
-                      type="button"
-                      onClick={() => openProfile(partner.id)}
-                      className="relative shrink-0 rounded-full"
-                      aria-label={`پروفایل ${partner.name}`}
-                    >
-                      <UserAvatar name={partner.name} className="h-9 w-9" {...avatarPropsOf(partner)} />
-                      <span
-                        className={cn(
-                          "absolute -bottom-0.5 -end-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
-                          partner.online ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.8)]" : "bg-muted-foreground/40"
-                        )}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openProfile(partner.id)}
-                      className="min-w-0 flex-1 text-start"
-                      aria-label={`پروفایل ${partner.name}`}
-                    >
-                      <p className="truncate text-sm font-extrabold">{partner.name}</p>
-                      {partnerTyping ? (
-                        <p className="flex items-center gap-1 text-[11px] font-bold text-primary">
-                          <TypingDots /> در حال تایپ است
-                        </p>
-                      ) : (
-                        <p className="text-[11px] text-muted-foreground">{roleLabel(partner.role)}</p>
-                      )}
-                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-extrabold">پیام همگانی</p>
+                    </div>
+                  </>
+                ) : active && partner ? (
+                  <>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" aria-label="بازگشت" onClick={() => setActive(null)}>
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                    {savedChat ? (
+                      <p className="min-w-0 flex-1 truncate text-sm font-extrabold">پیام‌های ذخیره‌شده</p>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openProfile(partner.id)}
+                          className="relative shrink-0 rounded-full"
+                          aria-label={`پروفایل ${partner.name}`}
+                        >
+                          <UserAvatar name={partner.name} className="h-9 w-9" {...avatarPropsOf(partner)} />
+                          <span
+                            className={cn(
+                              "absolute -bottom-0.5 -end-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
+                              partner.online ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.8)]" : "bg-muted-foreground/40"
+                            )}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openProfile(partner.id)}
+                          className="min-w-0 flex-1 text-start"
+                          aria-label={`پروفایل ${partner.name}`}
+                        >
+                          <p className="flex min-w-0 items-center gap-1 text-sm font-extrabold">
+                            <span className="truncate">{partner.name}</span>
+                            {isVerifiedRole(partner.role) && <VerifiedBadge role={partner.role} />}
+                          </p>
+                          {partnerTyping ? (
+                            <p className="flex items-center gap-1 text-[11px] font-bold text-primary">
+                              <TypingDots /> در حال تایپ است
+                            </p>
+                          ) : (
+                            <p className={cn("truncate text-[11px]", partner.online ? "font-bold text-success" : "text-muted-foreground")}>
+                              {presenceLabel(partner)}
+                            </p>
+                          )}
+                        </button>
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1064,16 +2025,18 @@ try {
                     </div>
                   </>
                 )}
-                <button
-                  onClick={() => {
-                    setOpen(false);
-                    setActive(null);
-                  }}
-                  aria-label="بستن"
-                  className="grid h-8 w-8 place-items-center rounded-lg bg-muted/60 text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+                {!active && (
+                  <button
+                    onClick={() => {
+                      setOpen(false);
+                      setActive(null);
+                    }}
+                    aria-label="بستن"
+                    className="grid h-8 w-8 place-items-center rounded-lg bg-muted/60 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
                 {active && (
                   <button
                     onClick={() => setMsgSearchOpen((o) => !o)}
@@ -1086,104 +2049,372 @@ try {
                     <Search className="h-4 w-4" />
                   </button>
                 )}
-                {!active && (
-                  <button
-                    onClick={() => setComposeOpen((value) => !value)}
-                    aria-label="شروع گفتگوی جدید"
-                    title="گفتگوی جدید"
-                    className={cn(
-                      "grid h-8 w-8 place-items-center rounded-lg bg-muted/60 transition-colors",
-                      composeOpen ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </button>
+                {!active && !broadcastOpen && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowArchived((value) => !value)}
+                      aria-label={showArchived ? "بازگشت به گفتگوها" : "آرشیو"}
+                      aria-pressed={showArchived}
+                      title={showArchived ? "بازگشت به گفتگوها" : "آرشیو"}
+                      className={cn(
+                        "grid h-8 w-8 place-items-center rounded-lg bg-muted/60 transition-colors",
+                        showArchived ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Archive className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => setComposeOpen((value) => !value)}
+                      aria-label="شروع گفتگوی جدید"
+                      title="گفتگوی جدید"
+                      className={cn(
+                        "grid h-8 w-8 place-items-center rounded-lg bg-muted/60 transition-colors",
+                        composeOpen ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                  </>
                 )}
                 <ThemeToggle />
               </div>
 
+              {peek && (
+                <div className="pointer-events-none absolute inset-x-3 top-16 bottom-4 z-30 flex flex-col overflow-hidden rounded-[26px] border border-white/70 bg-white/75 shadow-[0_24px_70px_-24px_rgba(42,39,69,0.45)] ring-1 ring-black/5 backdrop-blur-2xl dark:border-white/15 dark:bg-[#14172b]/90 dark:ring-white/10">
+                  <div className="flex items-center gap-2 border-b border-white/50 px-3 py-2.5 dark:border-white/10">
+                    {peek.saved ? (
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary/10 text-primary" aria-hidden>
+                        <Bookmark className="h-4 w-4" />
+                      </span>
+                    ) : (
+                      <span className="relative shrink-0">
+                        <UserAvatar name={peek.partner.name} className="h-8 w-8" {...avatarPropsOf(peek.partner)} />
+                        <span
+                          className={cn(
+                            "absolute -bottom-0.5 -end-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
+                            peek.partner.online ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.8)]" : "bg-muted-foreground/40",
+                          )}
+                        />
+                      </span>
+                    )}
+                    <p className="flex min-w-0 items-center gap-1 truncate text-sm font-extrabold">
+                      <span className="truncate">{peek.name}</span>
+                      {!peek.saved && isVerifiedRole(peek.partner.role) && <VerifiedBadge role={peek.partner.role} />}
+                    </p>
+                  </div>
+                  <div className="chat-scroll min-h-0 flex-1 overflow-hidden p-3">
+                    {peek.loading ? <ChatThreadSkeleton /> : <PeekThread messages={peek.messages} role={me?.role} saved={peek.saved} partner={peek.partner} />}
+                  </div>
+                </div>
+              )}
               <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-                {!active ? (
+                {!active && broadcastOpen ? (
                   <div className="flex min-h-0 flex-1 flex-col">
-                    <div className="shrink-0 p-3 pb-1">
+                    <div className="chat-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 pb-2 pt-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        aria-pressed={broadcastAll}
+                        onClick={() => {
+                          setBroadcastAll(true);
+                          setBroadcastConfirm(false);
+                        }}
+                        className={cn(
+                          "flex min-h-[4.5rem] items-center justify-between gap-2 rounded-[22px] px-4 py-4 text-start text-sm font-extrabold transition-colors",
+                          broadcastAll
+                            ? "bg-primary/15 text-foreground ring-2 ring-primary/45"
+                            : "bg-white/40 text-foreground hover:bg-white/60 dark:bg-white/5 dark:hover:bg-white/10"
+                        )}
+                      >
+                        همهٔ فعال‌ها
+                        {broadcastAll && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={!broadcastAll}
+                        onClick={() => {
+                          setBroadcastAll(false);
+                          setBroadcastConfirm(false);
+                        }}
+                        className={cn(
+                          "flex min-h-[4.5rem] items-center justify-between gap-2 rounded-[22px] px-4 py-4 text-start text-sm font-extrabold transition-colors",
+                          !broadcastAll
+                            ? "bg-primary/15 text-foreground ring-2 ring-primary/45"
+                            : "bg-white/40 text-foreground hover:bg-white/60 dark:bg-white/5 dark:hover:bg-white/10"
+                        )}
+                      >
+                        چند نفر
+                        {!broadcastAll && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                      </button>
+                    </div>
+                    {!broadcastAll && (
+                      <div className="space-y-1">
+                        {orderedPeople.map((person) => {
+                          const picked = broadcastIds.includes(person.id);
+                          return (
+                            <button
+                              key={person.id}
+                              type="button"
+                              aria-pressed={picked}
+                              onClick={() => {
+                                setBroadcastIds((ids) => (picked ? ids.filter((id) => id !== person.id) : [...ids, person.id]));
+                                setBroadcastConfirm(false);
+                              }}
+                              className={cn(
+                                "flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-start transition-colors",
+                                picked ? "bg-primary/10" : "hover:bg-white/45 dark:hover:bg-white/5"
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "grid h-5 w-5 shrink-0 place-items-center rounded-md border",
+                                  picked ? "border-primary bg-primary text-primary-foreground" : "border-foreground/20 bg-white/50 dark:bg-white/5"
+                                )}
+                              >
+                                {picked && <Check className="h-3.5 w-3.5" />}
+                              </span>
+                              <UserAvatar name={person.name} className="h-9 w-9" {...avatarPropsOf(person)} />
+                              <span className="min-w-0 flex-1">
+                                <span className="flex min-w-0 items-center gap-1 text-sm font-medium">
+                                  <span className="truncate">{person.name}</span>
+                                  {isVerifiedRole(person.role) && <VerifiedBadge role={person.role} />}
+                                </span>
+                                <PresenceLine person={person} />
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {orderedPeople.length === 0 && (
+                          <p className="px-2 py-3 text-sm text-muted-foreground">کسی برای انتخاب نیست.</p>
+                        )}
+                      </div>
+                    )}
+                    <p className="truncate text-center text-xs text-muted-foreground">{broadcastAudienceLine(broadcastAll, broadcastNames)}</p>
+                    {broadcastAll && broadcastConfirm && (
+                      <div className="space-y-3 rounded-[22px] bg-white/45 p-4 dark:bg-white/5">
+                        <p className="text-center text-sm font-bold">برای همهٔ فعال‌ها فرستاده شود؟</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button type="button" variant="outline" size="lg" className="px-2" onClick={() => setBroadcastConfirm(false)}>
+                            انصراف
+                          </Button>
+                          <Button
+                            type="button"
+                            size="lg"
+                            className="px-2"
+                            disabled={broadcastBusy || uploading || (!draft.trim() && attPref.length === 0 && !recBlob)}
+                            onClick={armBroadcast}
+                          >
+                            {broadcastBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                            برای همه بفرست
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="shrink-0 px-2 pb-2">
+                    {recording && (
+                      <div className="mb-2 flex items-center gap-2 rounded-xl bg-destructive/10 px-3 py-2">
+                        <span className="flex-1 text-xs font-bold text-destructive tabular-nums">{clockDur(recSec)}</span>
+                        <button type="button" onClick={cancelVoice} aria-label="انصراف از ضبط" className="text-destructive/70 hover:text-destructive">
+                          <X className="h-4 w-4" />
+                        </button>
+                        <button type="button" onClick={toggleMic} aria-label="پایان ضبط" className="text-destructive">
+                          <Square className="h-4 w-4 fill-current" />
+                        </button>
+                      </div>
+                    )}
+                    <PendingAttachBar
+                      atts={attPref}
+                      uploading={uploading}
+                      uploadPct={uploadPct}
+                      captionHint={draft.trim() ? "با همین کپشن ارسال می‌شود." : "بدون کپشن هم می‌توانید بفرستید."}
+                      onRemove={(index) => {
+                        setAttPref((prev) => prev.filter((_, i) => i !== index));
+                        setBroadcastConfirm(false);
+                      }}
+                      onPreview={setPreview}
+                    />
+                    {emojiOpen && (
+                      <div className="mb-2 grid w-full grid-cols-8 gap-1 rounded-2xl border border-white/60 bg-white/75 p-2 shadow-soft backdrop-blur-xl dark:border-white/15 dark:bg-[#1a1e33]/80">
+                        {EMOJIS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => {
+                              if (draft.length + emoji.length > MAX_LEN) return;
+                              setDraft((value) => value + emoji);
+                              setBroadcastConfirm(false);
+                            }}
+                            className="grid h-8 w-8 place-items-center rounded-lg transition-colors hover:bg-primary/10"
+                            aria-label={emoji}
+                          >
+                            <AppleEmoji emoji={emoji} size={22} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {recUrl ? (
+                      <VoiceRecPreview
+                        url={recUrl}
+                        dur={recDur}
+                        sending={broadcastBusy || uploading}
+                        onCancel={() => {
+                          cancelVoicePreview();
+                          setBroadcastConfirm(false);
+                        }}
+                        onSend={armBroadcast}
+                      />
+                    ) : (
+                      <div className="flex items-end gap-1.5 rounded-xl border-2 border-border/70 bg-card/85 p-1.5 shadow-soft">
+                        {draft.trim() || attPref.length > 0 ? (
+                          <Button
+                            onClick={armBroadcast}
+                            disabled={broadcastBusy || uploading || sending || recording || (!broadcastAll && broadcastIds.length === 0)}
+                            className="h-10 w-10 shrink-0 rounded-xl bg-primary text-primary-foreground"
+                            aria-label="ارسال"
+                          >
+                            {broadcastBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground"
+                            onClick={toggleMic}
+                            disabled={uploading || broadcastBusy}
+                            aria-label="پیام صوتی"
+                          >
+                            <Mic className="h-4 w-4 rtl:-scale-x-100" />
+                          </Button>
+                        )}
+                        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground" onClick={pickPhotos} disabled={uploading || broadcastBusy || recording} aria-label="پیوست عکس">
+                          <ImageIcon className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground" onClick={pickFile} disabled={uploading || broadcastBusy || recording} aria-label="پیوست فایل">
+                          {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                        </Button>
+                        <div className="min-w-0 flex-1">
+                          <AutoTextarea
+                            value={draft}
+                            onChange={(value) => {
+                              setDraft(value.slice(0, MAX_LEN));
+                              setBroadcastConfirm(false);
+                            }}
+                            onSend={armBroadcast}
+                            placeholder={"\u200Fپیام خود را بنویسید…"}
+                            disabled={broadcastBusy || uploading}
+                          />
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={cn("h-10 w-10 shrink-0 rounded-xl", emojiOpen ? "bg-primary/10 text-primary" : "text-muted-foreground")}
+                          onClick={() => setEmojiOpen((open) => !open)}
+                          disabled={broadcastBusy || recording}
+                          aria-label="ایموجی"
+                        >
+                          <Smile className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                ) : !active ? (
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="shrink-0 px-4 pb-1 pt-4">
                       <div className="relative">
-                        <Search className="absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                        <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
                         <input
                           value={query}
                           onChange={(e) => setQuery(e.target.value)}
                           placeholder="جستجو در گفتگوها…"
                           dir="rtl"
-                          className="h-9 w-full rounded-xl border-2 border-border bg-background/60 ps-8 pe-3 text-sm outline-none transition-colors placeholder:text-muted-foreground/80 focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
+                          className="h-11 w-full rounded-2xl border border-white/70 bg-white/45 ps-10 pe-3 text-sm outline-none transition-colors placeholder:text-muted-foreground/75 focus-visible:ring-2 focus-visible:ring-ring dark:border-white/10 dark:bg-white/5"
                         />
                       </div>
                     </div>
-                    <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain p-3 chat-scroll">
+                    <div className="chat-scroll min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain px-2 pb-3 pt-2">
                       {composeOpen && (
                         <div className="mb-3 rounded-2xl border-2 border-primary/20 bg-primary/5 p-3">
                           <p className="mb-2 text-xs font-bold text-muted-foreground">شروع گفتگوی جدید</p>
-                          {(loveList?.mentors ?? []).map((m) => (
+                          {me?.role !== "student" && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setComposeOpen(false);
+                                setBroadcastConfirm(false);
+                                setBroadcastAll(true);
+                                setBroadcastIds([]);
+                                setDraft("");
+                                setAttPref([]);
+                                setBroadcastOpen(true);
+                              }}
+                              className="mb-1 flex w-full items-center gap-2 rounded-xl px-2 py-2 text-sm font-bold transition-colors hover:bg-primary/10"
+                            >
+                              <Megaphone className="h-4 w-4 text-primary" />
+                              پیام همگانی
+                            </button>
+                          )}
+                          {orderedPeople.map((m) => (
                             <button
                               key={m.id}
                               onClick={() => {
                                 setActive(m.id);
                                 setComposeOpen(false);
                               }}
-                              className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-sm transition-colors hover:bg-primary/10"
+                              className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-start text-sm transition-colors hover:bg-primary/10"
                             >
                               <UserAvatar name={m.name} className="h-8 w-8" {...avatarPropsOf(m)} />
-                              <span className="font-medium">{m.name}</span>
-                              <span className="ms-auto text-[10px] text-muted-foreground">{roleLabel(m.role)}</span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex min-w-0 items-center gap-1 font-medium">
+                                  <span className="truncate">{m.name}</span>
+                                  {isVerifiedRole(m.role) && <VerifiedBadge role={m.role} />}
+                                </span>
+                                <PresenceLine person={m} />
+                              </span>
                             </button>
                           ))}
-                          {(loveList?.mentors ?? []).length === 0 && (
+                          {orderedPeople.length === 0 && (
                             <p className="text-xs text-muted-foreground">مخاطب مجازی برای گفتگو وجود ندارد.</p>
                           )}
                         </div>
                       )}
-                      {sortedConvs.map((c) => (
-                        <button
-                          key={c.partner.id}
-                          onClick={() => {
-                            setActive(c.partner.id);
-                            setComposeOpen(false);
-                          }}
-                          className="flex w-full items-center gap-3 rounded-2xl border-2 border-border/70 bg-background/50 px-3 py-2.5 text-right text-sm transition-colors hover:border-primary/40 hover:bg-background/80"
-                        >
-                          <div className="relative shrink-0">
-                          <UserAvatar name={c.partner.name} className="h-10 w-10" {...avatarPropsOf(c.partner)} />
-                          <span
-                            className={cn(
-                              "absolute -bottom-0.5 -end-0.5 h-2.5 w-2.5 rounded-full border-2 border-card",
-                              c.partner.online ? "bg-success" : "bg-muted-foreground/40"
-                            )}
+                      {sortedConvs.map((c) => {
+                        const rowName = c.partner.id === me?.id ? "پیام‌های ذخیره‌شده" : c.partner.name;
+                        const pins = sortedConvs.filter((x) => x.pinnedRank != null);
+                        const pinIndex = pinOrderIds.indexOf(c.partner.id);
+                        const canRaise = c.pinnedRank != null && c.partner.id !== me?.id && pinIndex > 0;
+                        return (
+                          <ConversationRow
+                            key={c.partner.id}
+                            c={c}
+                            rowName={rowName}
+                            saved={c.partner.id === me?.id}
+                            canRaise={canRaise}
+                            nextPinRank={pins.length}
+                            shiftY={rowShift(c.partner.id)}
+                            lifting={pinDragView?.phase !== "commit" && pinDragView?.id === c.partner.id}
+                            settling={pinDragView?.phase === "settle" && pinDragView.id === c.partner.id}
+                            freezeMotion={pinDragView?.phase === "commit"}
+                            shellH={pinDragView?.phase !== "commit" && pinDragView?.id === c.partner.id ? pinDragView.shellH : 0}
+                            onOpen={() => {
+                              setActive(c.partner.id);
+                              setComposeOpen(false);
+                            }}
+                            onRaise={canRaise ? () => raisePin(c.partner.id) : undefined}
+                            onPinGesture={
+                              c.pinnedRank != null && c.partner.id !== me?.id
+                                ? (phase, clientY) => onPinGesture(c, phase, clientY)
+                                : undefined
+                            }
+                            onArmPeek={() => armPeek(c, rowName)}
+                            onEndPeek={endPeek}
+                            onDisarmPeek={disarmPeek}
+                            heldRef={peekArmed}
                           />
-                        </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="truncate font-bold">{c.partner.name}</p>
-                              <span className="shrink-0 text-[10px] text-muted-foreground">
-                                {c.lastMessage ? clock(c.lastMessage.createdAt) : ""}
-                              </span>
-                            </div>
-                            <div className="mt-0.5 flex items-center gap-1.5">
-                              <p
-                                dir="auto"
-                                className={cn(
-                                  "truncate text-xs",
-                                  c.unreadCount > 0 ? "font-bold text-foreground" : "text-muted-foreground"
-                                )}
-                              >
-                                {c.lastMessage ? previewOf(c.lastMessage) : "هنوز پیامی نیست"}
-                              </p>
-                              {c.unreadCount > 0 && (
-                                <span className="ms-auto grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-accent px-1.5 text-[10px] font-black text-accent-foreground">
-                                  {fa(c.unreadCount)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                      ))}
+                        );
+                      })}
 
                       {sortedConvs.length === 0 && conversations.length > 0 && (
                         <p className="px-1 py-3 text-center text-xs text-muted-foreground">گفتگویی یافت نشد.</p>
@@ -1198,17 +2429,23 @@ try {
                       {conversations.length === 0 && !composeOpen && !convLoading && (
                         <div className="space-y-1 p-1">
                           <p className="mb-2 text-xs font-bold text-muted-foreground">برای شروع، روی مداد بزنید</p>
-                          {(loveList?.mentors ?? []).map((m) => (
+                          {orderedPeople.map((m) => (
                             <button
                               key={m.id}
                               onClick={() => {
                                 setActive(m.id);
                                 setComposeOpen(false);
                               }}
-                              className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-sm transition-colors hover:bg-primary/10"
+                              className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-start text-sm transition-colors hover:bg-primary/10"
                             >
                               <UserAvatar name={m.name} className="h-7 w-7" {...avatarPropsOf(m)} />
-                              <span className="font-medium">{m.name}</span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex min-w-0 items-center gap-1 font-medium">
+                                  <span className="truncate">{m.name}</span>
+                                  {isVerifiedRole(m.role) && <VerifiedBadge role={m.role} />}
+                                </span>
+                                <PresenceLine person={m} />
+                              </span>
                             </button>
                           ))}
                         </div>
@@ -1331,8 +2568,8 @@ try {
                         onDrop={(e) => {
                           e.preventDefault();
                           setDragOver(false);
-                          const f = e.dataTransfer.files?.[0];
-                          if (f) void uploadSelected(f);
+                          const files = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+                          if (files.length) void uploadSelected(files);
                         }}
                         dir="ltr"
                         className="relative z-10 h-full min-h-0 space-y-1 overflow-y-auto overscroll-contain p-3 chat-scroll"
@@ -1355,7 +2592,7 @@ try {
                             </button>
                           </div>
                         )}
-                        {emptyThread && (
+                        {emptyThread && !savedChat && (
                           <div className="mx-auto max-w-[260px] space-y-3 pt-8 text-center">
                             <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-primary/10">
                               <MessageSquare className="h-6 w-6 text-primary" />
@@ -1409,7 +2646,7 @@ try {
                                 </div>
                               )}
                               <div className="group flex w-full items-end gap-1.5">
-                                {!seg.mine && partner && (
+                                {!seg.mine && partner && !savedChat && (
                                   <button
                                     type="button"
                                     onClick={() => openProfile(partner.id)}
@@ -1419,15 +2656,17 @@ try {
                                     <UserAvatar name={partner.name} className="h-7 w-7" {...avatarPropsOf(partner)} />
                                   </button>
                                 )}
-                                <div className={cn("flex min-w-0 max-w-[min(100%,20rem)] items-end gap-1 sm:max-w-[24rem]", seg.mine ? "ml-auto" : "mr-auto")}>
-                                  <div className={cn("flex min-w-0 max-w-full flex-col", seg.mine ? "items-end" : "items-start")}>
+                                <div className={cn("flex w-full min-w-0 max-w-[min(100%,20rem)] items-end gap-1 sm:max-w-[24rem]", seg.mine ? "ml-auto" : "mr-auto")}>
+                                  <div className={cn("flex w-full min-w-0 max-w-full flex-col", seg.mine ? "items-end" : "items-start")}>
                                     {seg.msgs.map((m, idx) => {
                                       const isLast = idx === seg.msgs.length - 1;
-                                      const mediaOnly = !!m.attachment && !m.body;
+                                      const atts = messageAttachments(m);
+                                      const multi = atts.length > 1;
+                                      const mediaOnly = atts.length > 0 && !m.body;
                                       const isPending = m.id < 0;
-                                      const isGif = mediaOnly && isGifName(m.attachment!);
+                                      const isGif = !multi && mediaOnly && isGifName(atts[0]);
                                       const onlyEmoji =
-                                        !m.replyTo && !m.attachment && !!m.body && isSingleEmoji(m.body);
+                                        !m.replyTo && atts.length === 0 && !!m.body && isSingleEmoji(m.body);
                                       const q0 = msgQuery.trim();
                                       const dimmed = q0 !== "" && matchCount > 0 && !matchSet.has(m.id);
                                       const isCurrent = matchSet.has(m.id) && m.id === matchIds[matchIdx];
@@ -1467,11 +2706,11 @@ try {
                                             animate={{ opacity: 1, y: 0 }}
                                             transition={softTween}
                                             className={cn(
-                                              mediaOnly && !isGif
+                                              mediaOnly && editingId !== m.id && !isGif
                                                 ? "overflow-hidden"
                                                 : onlyEmoji || isGif
                                                   ? "bg-transparent px-1.5 py-1"
-                                                  : "max-w-full px-3.5 py-2 text-sm leading-relaxed",
+                                                  : "w-fit min-w-0 max-w-full px-3.5 py-2 text-sm leading-relaxed",
                                               !onlyEmoji &&
                                                 !isGif &&
                                                 (seg.mine
@@ -1486,9 +2725,84 @@ try {
                                               flashId === m.id && "chat-msg-glow",
                                             )}
                                           >
-                                            {mediaOnly && isGif ? (
+                                            {editingId === m.id ? (
+                                              <ChatEditPane
+                                                message={m}
+                                                mine={seg.mine}
+                                                atts={atts}
+                                                quote={m.replyTo ? msgs.find((x) => x.id === m.replyTo) ?? null : null}
+                                                partnerName={partner?.name}
+                                                meRole={me?.role}
+                                                onlyEmoji={onlyEmoji}
+                                                draft={editDraft}
+                                                onDraft={setEditDraft}
+                                                adds={editAdds}
+                                                removed={editRemoved}
+                                                replacements={editReplacements}
+                                                busy={editBusy || uploading}
+                                                onAdd={beginEditAdd}
+                                                onReplace={beginEditReplace}
+                                                onClearReplace={(index) =>
+                                                  setEditReplacements((cur) => {
+                                                    const next = { ...cur };
+                                                    delete next[index];
+                                                    return next;
+                                                  })
+                                                }
+                                                onToggleRemove={(index) =>
+                                                  setEditRemoved((cur) =>
+                                                    cur.includes(index) ? cur.filter((i) => i !== index) : [...cur, index],
+                                                  )
+                                                }
+                                                onRemoveAdd={(index) => setEditAdds((cur) => cur.filter((_, i) => i !== index))}
+                                                onCancel={closeEdit}
+                                                onSave={() => void saveEdit()}
+                                                onPreview={setPreview}
+                                              />
+                                            ) : multi ? (
+                                              <>
+                                                {m.replyTo && (
+                                                  <QuoteBox
+                                                    q={msgs.find((x) => x.id === m.replyTo) ?? null}
+                                                    mine={seg.mine}
+                                                    partnerName={partner?.name}
+                                                    meRole={me?.role}
+                                                  />
+                                                )}
+                                                <MultiAttach
+                                                  atts={atts}
+                                                  mine={seg.mine}
+                                                  time={m.createdAt}
+                                                  edited={!!m.editedAt}
+                                                  read={!!m.readAt}
+                                                  pending={isPending}
+                                                  onPreview={setPreview}
+                                                  inset={!!m.body}
+                                                  showTime={!m.body}
+                                                />
+                                                {m.body ? (
+                                                  <p dir="auto" className="chat-bubble-text mt-1">
+                                                    <HighlightBody text={m.body} q={msgQuery} />
+                                                  </p>
+                                                ) : null}
+                                                {m.body && editingId !== m.id && (
+                                                  <span className={cn("mt-1 flex items-center gap-1 text-[10px] leading-none", seg.mine ? "justify-end" : "justify-start")}>
+                                                    {m.editedAt && (
+                                                      <span className={cn("opacity-75", seg.mine ? "text-primary-foreground" : "text-muted-foreground")}>ویرایش‌شده</span>
+                                                    )}
+                                                    <span className={cn("opacity-75", seg.mine ? "text-primary-foreground" : "text-muted-foreground")}>{clock(m.createdAt)}</span>
+                                                    {seg.mine &&
+                                                      (isPending ? (
+                                                        <Clock className="h-3.5 w-3.5 animate-spin text-primary-foreground/75 [animation-duration:1.6s]" />
+                                                      ) : (
+                                                        <SeenTicks read={!!m.readAt} />
+                                                      ))}
+                                                  </span>
+                                                )}
+                                              </>
+                                            ) : mediaOnly && isGif ? (
                                               <GifSticker
-                                                att={m.attachment!}
+                                                att={atts[0]}
                                                 mine={seg.mine}
                                                 time={m.createdAt}
                                                 pending={isPending}
@@ -1498,7 +2812,7 @@ try {
                                               />
                                             ) : mediaOnly ? (
                                             <>
-                                              <MediaOnly att={m.attachment!} mine={seg.mine} time={m.createdAt} edited={!!m.editedAt} read={!!m.readAt} pending={isPending} onPreview={setPreview} />
+                                              <MediaOnly att={atts[0]} mine={seg.mine} time={m.createdAt} edited={!!m.editedAt} read={!!m.readAt} pending={isPending} onPreview={setPreview} />
                                               </>
                                           ) : onlyEmoji ? (
                                             <>
@@ -1527,38 +2841,10 @@ try {
                                                   onPreview={setPreview}
                                                 />
                                               )}
-                                              {editingId === m.id ? (
-                                                <div className="space-y-2">
-                                                  <textarea
-                                                    value={editDraft}
-                                                    onChange={(e) => setEditDraft(e.target.value)}
-                                                    dir={bubbleDir(editDraft)}
-                                                    rows={3}
-                                                    maxLength={MAX_LEN}
-                                                    className="w-full min-w-[12rem] resize-none rounded-lg bg-background px-2 py-1 text-sm text-foreground outline-none"
-                                                  />
-                                                  <div className="flex justify-end gap-1">
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => setEditingId(null)}
-                                                      className="rounded-full px-2 py-1 text-[10px] font-bold text-foreground"
-                                                    >
-                                                      انصراف
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      disabled={editBusy}
-                                                      onClick={() => void saveEdit()}
-                                                      className="rounded-full bg-foreground/10 px-2 py-1 text-[10px] font-bold text-foreground disabled:opacity-50"
-                                                    >
-                                                      {editBusy ? "…" : "ذخیره"}
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                              ) : m.body ? (
+                                              {m.body ? (
                                                 <p
-                                                  dir={bubbleDir(m.body)}
-                                                  className={cn("whitespace-pre-wrap break-words text-start [overflow-wrap:anywhere]", m.attachment && "mt-1")}
+                                                  dir="auto"
+                                                  className={cn("chat-bubble-text", m.attachment && "mt-1")}
                                                 >
                                                   <HighlightBody text={m.body} q={msgQuery} />
                                                 </p>
@@ -1603,10 +2889,29 @@ try {
                                               />
                                             </div>
                                           )}
+                                          {!!m.buttons?.length && !seg.mine && (
+                                            <div className="mt-1 flex flex-col gap-1">
+                                              {m.buttons.map((b) => (
+                                                <button
+                                                  key={b.text}
+                                                  type="button"
+                                                  className="rounded-lg border px-2 py-1 text-center text-xs font-bold"
+                                                  onClick={() => {
+                                                    if (!active) return;
+                                                    void http
+                                                      .post(`/api/chats/${active}/messages`, { body: b.text })
+                                                      .then(() => qc.invalidateQueries({ queryKey: ["chat", active] }));
+                                                  }}
+                                                >
+                                                  {b.text}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          )}
                                           {editingId !== m.id && (
                                           <MsgActions
                                             mine={seg.mine}
-                                            voice={m.attachment?.type === "audio"}
+                                            voice={atts.length === 1 && atts[0].type === "audio"}
                                             media={mediaOnly}
                                             armed={delArm === m.id}
                                             pinned={pinnedIds.has(m.id) || !!m.pinned}
@@ -1617,22 +2922,33 @@ try {
                                               void toggleReact(m, em);
                                             }}
                                             onReply={() => setReplyTo(m)}
+                                            onSave={() => {
+                                              void http.post("/api/me/saved", {
+                                                body: m.body,
+                                                attachmentUrl: m.attachment?.url ?? "",
+                                                attachmentType: m.attachment?.type ?? "",
+                                                attachmentName: m.attachment?.name ?? "",
+                                              }).then(() => {
+                                                toast.success("در پیام‌های ذخیره‌شده قرار گرفت");
+                                                qc.invalidateQueries({ queryKey: ["conversations"] });
+                                                if (me) qc.invalidateQueries({ queryKey: ["chat", me.id] });
+                                              });
+                                            }}
                                             onCopy={() => copyText(m)}
                                             onPin={() => void togglePin(m)}
                                             onEdit={
-                                              seg.mine && m.id > 0 && (canReplaceMedia(m) || !!m.body)
+                                              seg.mine && m.id > 0 && (atts.length > 0 || !!m.body)
                                                 ? () => {
                                                     setReactId(null);
-                                                    if (canReplaceMedia(m)) {
-                                                      beginReplace(m);
-                                                      return;
-                                                    }
                                                     setEditingId(m.id);
-                                                    setEditDraft(m.body);
+                                                    setEditDraft(m.body ?? "");
+                                                    setEditAdds([]);
+                                                    setEditRemoved([]);
+                                                    setEditReplacements({});
                                                   }
                                                 : undefined
                                             }
-                                            editLabel={canReplaceMedia(m) ? "جایگذاری" : "ویرایش پیام"}
+                                            editLabel="ویرایش پیام"
                                             onDelete={() => armDelete(m.id)}
                                           />
                                           )}
@@ -1672,14 +2988,14 @@ try {
                       </AnimatePresence>
                     </div>
 
-                    {partnerTyping && (
+                    {partnerTyping && !savedChat && (
                       <div className="flex shrink-0 items-center gap-2 border-t border-border/40 bg-background/40 px-4 py-1.5 text-xs font-medium text-muted-foreground">
                         <TypingDots />
                         {partner?.name} در حال تایپ است…
                       </div>
                     )}
 
-                    {emptyThread && (
+                    {emptyThread && !savedChat && (
                       <div className="flex shrink-0 flex-wrap gap-1.5 px-3 pt-2">
                         {(me?.role === "student" ? STUDENT_SUGGESTIONS : MENTOR_SUGGESTIONS).map((q) => (
                           <button
@@ -1719,65 +3035,15 @@ try {
                         </div>
                       )}
 
-                      {(attPref || uploading) && (
-                        <div className="relative mb-2 flex items-center gap-2 overflow-hidden rounded-xl border-2 border-border/70 bg-muted/40 px-3 py-2">
-                          {uploading && (
-                            <span className="pointer-events-none absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-primary/10">
-                              <span
-                                className="block h-full bg-primary transition-[width] duration-150"
-                                style={{ width: `${Math.round(uploadPct * 100)}%` }}
-                              />
-                            </span>
-                          )}
-                          {uploading ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                              <span className="flex-1 text-xs font-medium text-muted-foreground">
-                                در حال آپلود… {fa(Math.round(uploadPct * 100))}٪
-                              </span>
-                            </>
-                          ) : attPref ? (
-                            <>
-                              {attPref.type === "image" ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setPreview(attPref)}
-                                  aria-label="پیش‌نمایش تصویر"
-                                  className="group relative h-28 w-28 shrink-0 cursor-zoom-in overflow-hidden rounded-xl border-2 border-border/70"
-                                >
-                                  <CachedImg
-                                    src={attPref.url}
-                                    alt={attPref.name}
-                                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                                  />
-                                  <span className="absolute inset-0 grid place-items-center bg-black/0 opacity-0 transition-opacity group-hover:bg-black/30 group-hover:opacity-100">
-                                    <Maximize className="h-6 w-6 text-white drop-shadow" />
-                                  </span>
-                                </button>
-                              ) : (
-                                <AttThumb att={attPref} />
-                              )}
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-xs font-bold">{attPref.name}</p>
-                                <p className="text-[10px] text-muted-foreground">{bytes(attPref.size)}</p>
-                              </div>
-                              {attPref.type === "image" && (
-                                <button
-                                  onClick={() => setPreview(attPref)}
-                                  aria-label="پیش‌نمایش"
-                                  title="پیش‌نمایش"
-                                  className="hidden text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
-                                >
-                                  <Maximize className="h-4 w-4" />
-                                </button>
-                              )}
-                              <button onClick={() => setAttPref(null)} aria-label="حذف ضمیمه" className="text-muted-foreground hover:text-destructive">
-                                <X className="h-4 w-4" />
-                              </button>
-                            </>
-                          ) : null}
-                        </div>
-                      )}
+                      <PendingAttachBar
+                        atts={attPref}
+                        uploading={uploading}
+                        uploadPct={uploadPct}
+                        largePreview
+                        captionHint={draft.trim() ? "با همین کپشن ارسال می‌شود." : "بدون کپشن هم می‌توانید بفرستید، یا پایین متن بنویسید."}
+                        onRemove={(index) => setAttPref((prev) => prev.filter((_, i) => i !== index))}
+                        onPreview={setPreview}
+                      />
 
                       <AnimatePresence initial={false}>
                         {replyTo && (
@@ -1851,8 +3117,8 @@ try {
                             </motion.div>
                           )}
                         </AnimatePresence>
-                        <div className="flex items-center gap-1.5 rounded-xl border-2 border-border/70 bg-card/85 p-1.5 shadow-soft transition-colors focus-within:border-primary/50 dark:border-border/70">
-                        {draft.trim() || attPref ? (
+                        <div className="flex items-end gap-1.5 rounded-xl border-2 border-border/70 bg-card/85 p-1.5 shadow-soft transition-colors focus-within:border-primary/50 dark:border-border/70">
+                        {draft.trim() || attPref.length > 0 ? (
                           <Button
                             onClick={() => send()}
                             disabled={sending || uploading || atLimit}
@@ -1876,6 +3142,9 @@ try {
                             <Mic className="h-4 w-4 rtl:-scale-x-100" />
                           </Button>
                         )}
+                        <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground" onClick={pickPhotos} disabled={uploading || sending || recording} aria-label="پیوست عکس">
+                          <ImageIcon className="h-4 w-4" />
+                        </Button>
                         <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground" onClick={pickFile} disabled={uploading || sending || recording} aria-label="پیوست فایل">
                           {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
                         </Button>
@@ -1888,7 +3157,7 @@ try {
                               if (v.trim()) signalTyping();
                             }}
                             onSend={() => send()}
-                            placeholder="پیام خود را بنویسید…"
+                            placeholder={"\u200Fپیام خود را بنویسید…"}
                             disabled={sending || uploading}
                           />
                         </div>
@@ -1916,13 +3185,22 @@ try {
       </AnimatePresence>
 
       <input
-        ref={fileRef}
+        ref={photoRef}
         type="file"
-        accept="image/*,video/*,audio/*,.pdf,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json"
+        accept="image/*"
+        multiple
         className="hidden"
         onChange={onFile}
       />
-      <input ref={replaceRef} type="file" className="hidden" onChange={(e) => void onReplaceFile(e)} />
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*,video/*,audio/*,.pdf,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json"
+        multiple
+        className="hidden"
+        onChange={onFile}
+      />
+      <input ref={editFileRef} type="file" className="hidden" onChange={(e) => void onEditPick(e)} />
 
       <AnimatePresence>
         {preview && (
@@ -2037,13 +3315,158 @@ try {
 
 // ---- attachments -----------------------------------------------------------
 
+const maxChatAttachments = 10;
+
+function messageAttachments(m: ChatMessage): ChatAttachment[] {
+  if (m.attachments && m.attachments.length > 0) return m.attachments;
+  return m.attachment ? [m.attachment] : [];
+}
+
+function pickedAttachments(
+  att: ChatAttachment | ChatAttachment[] | null | undefined,
+  pref: ChatAttachment[],
+): ChatAttachment[] {
+  if (att === undefined) return pref;
+  if (att === null) return [];
+  return Array.isArray(att) ? att : [att];
+}
+
 function isGifName(att: ChatAttachment) {
   return /\.gif($|\?)/i.test(att.name || "") || /\.gif($|\?)/i.test(att.url || "");
 }
 
-function canReplaceMedia(m: ChatMessage): boolean {
-  const kind = m.attachment?.type;
-  return kind === "image" || kind === "video" || kind === "audio";
+function ChatEditPane({
+  message,
+  mine,
+  atts,
+  quote,
+  partnerName,
+  meRole,
+  onlyEmoji,
+  draft,
+  onDraft,
+  adds,
+  removed,
+  replacements,
+  busy,
+  onAdd,
+  onReplace,
+  onClearReplace,
+  onToggleRemove,
+  onRemoveAdd,
+  onCancel,
+  onSave,
+  onPreview,
+}: {
+  message: ChatMessage;
+  mine: boolean;
+  atts: ChatAttachment[];
+  quote: ChatMessage | null;
+  partnerName?: string;
+  meRole?: string;
+  onlyEmoji: boolean;
+  draft: string;
+  onDraft: (value: string) => void;
+  adds: ChatAttachment[];
+  removed: number[];
+  replacements: Record<number, ChatAttachment>;
+  busy: boolean;
+  onAdd: () => void;
+  onReplace: (index: number) => void;
+  onClearReplace: (index: number) => void;
+  onToggleRemove: (index: number) => void;
+  onRemoveAdd: (index: number) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  onPreview: (att: ChatAttachment) => void;
+}) {
+  return (
+    <>
+      {message.replyTo && (
+        <QuoteBox q={quote} mine={mine} partnerName={partnerName} meRole={meRole} />
+      )}
+      {onlyEmoji && <AppleEmoji emoji={draft || message.body || "🙂"} size={40} />}
+      {atts.length > 0 && (
+        <MultiAttach
+          atts={atts}
+          mine={mine}
+          time={message.createdAt}
+          edited={!!message.editedAt}
+          read={!!message.readAt}
+          onPreview={onPreview}
+          inset
+          showTime={false}
+        />
+      )}
+      <div className="mt-2 space-y-2">
+        {atts.map((att, index) => {
+          const gone = removed.includes(index);
+          const next = replacements[index];
+          return (
+            <div key={`${att.url}-${index}`} className="flex items-center gap-1 text-[10px]">
+              <span dir="auto" className={cn("min-w-0 flex-1 truncate font-bold", gone && "line-through opacity-60")}>
+                {att.name}
+              </span>
+              {gone ? (
+                <button type="button" onClick={() => onToggleRemove(index)} className="shrink-0 rounded-full px-2 py-1 font-bold text-foreground">
+                  برگرداندن
+                </button>
+              ) : (
+                <>
+                  {next && (
+                    <button
+                      type="button"
+                      onClick={() => onClearReplace(index)}
+                      className="max-w-[7rem] truncate rounded-full px-2 py-1 font-bold text-foreground"
+                      title="انصراف از جایگزینی"
+                    >
+                      با {next.name}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => onReplace(index)} className="shrink-0 rounded-full px-2 py-1 font-bold text-foreground">
+                    جایگزینی
+                  </button>
+                  <button type="button" onClick={() => onToggleRemove(index)} className="shrink-0 rounded-full px-2 py-1 font-bold text-foreground">
+                    حذف
+                  </button>
+                </>
+              )}
+            </div>
+          );
+        })}
+        {adds.map((att, index) => (
+          <div key={`${att.url}-${index}`} className="flex items-center gap-1 text-[10px]">
+            <span dir="auto" className="min-w-0 flex-1 truncate font-bold">
+              افزوده: {att.name}
+            </span>
+            <button type="button" onClick={() => onRemoveAdd(index)} className="shrink-0 rounded-full px-2 py-1 font-bold text-foreground">
+              حذف
+            </button>
+          </div>
+        ))}
+        <button type="button" onClick={onAdd} disabled={busy} className="rounded-full bg-foreground/10 px-2 py-1 text-[10px] font-bold text-foreground disabled:opacity-50">
+          افزودن پیوست
+        </button>
+        <textarea
+          value={draft}
+          onChange={(e) => onDraft(e.target.value)}
+          dir="auto"
+          rows={3}
+          maxLength={MAX_LEN}
+          placeholder="کپشن یا متن…"
+          className="chat-composer w-full min-w-[12rem] resize-none rounded-lg bg-background px-2 py-1 text-sm text-foreground outline-none"
+        />
+        <div className="flex justify-end gap-1">
+          <button type="button" onClick={onCancel} className="rounded-full px-2 py-1 text-[10px] font-bold text-foreground">
+            انصراف
+          </button>
+          <button type="button" disabled={busy} onClick={onSave} className="rounded-full bg-foreground/10 px-2 py-1 text-[10px] font-bold text-foreground disabled:opacity-50">
+            {busy ? "…" : "ذخیره"}
+          </button>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function GifSticker({
@@ -2144,6 +3567,337 @@ function FileSaveButton({ att, mine, className }: { att: ChatAttachment; mine: b
       {pct !== null && (
         <span className="absolute inset-x-0 bottom-0 h-1 bg-primary/15">
           <span className="block h-full bg-primary transition-[width] duration-150" style={{ width: `${Math.round(pct * 100)}%` }} />
+        </span>
+      )}
+    </div>
+  );
+}
+
+function PendingAttachBar({
+  atts,
+  uploading,
+  uploadPct,
+  captionHint,
+  onRemove,
+  onPreview,
+  largePreview,
+}: {
+  atts: ChatAttachment[];
+  uploading: boolean;
+  uploadPct: number;
+  captionHint: string;
+  onRemove: (index: number) => void;
+  onPreview: (att: ChatAttachment) => void;
+  largePreview?: boolean;
+}) {
+  if (!uploading && atts.length === 0) return null;
+  const one = atts.length === 1 ? atts[0] : null;
+  return (
+    <div className="relative mb-2 overflow-hidden rounded-xl border-2 border-border/70 bg-muted/40 px-3 py-2">
+      {uploading && (
+        <span className="pointer-events-none absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-primary/10">
+          <span className="block h-full bg-primary transition-[width] duration-150" style={{ width: `${Math.round(uploadPct * 100)}%` }} />
+        </span>
+      )}
+      {uploading && atts.length === 0 ? (
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          <span className="flex-1 text-xs font-medium text-muted-foreground">در حال آپلود… {fa(Math.round(uploadPct * 100))}٪</span>
+        </div>
+      ) : one && one.type === "image" && largePreview ? (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onPreview(one)}
+            aria-label="پیش‌نمایش تصویر"
+            className="group relative h-28 w-28 shrink-0 cursor-zoom-in overflow-hidden rounded-xl border-2 border-border/70"
+          >
+            <CachedImg src={one.url} alt={one.name} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold">{one.name}</p>
+            <p className="text-[10px] text-muted-foreground">{bytes(one.size)}</p>
+            <p className="text-[10px] text-muted-foreground">{captionHint}</p>
+          </div>
+          <button type="button" onClick={() => onRemove(0)} aria-label="حذف ضمیمه" className="text-muted-foreground hover:text-destructive">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : one ? (
+        <div className="flex items-center gap-2">
+          <AttThumb att={one} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold">{one.name}</p>
+            <p className="text-[10px] text-muted-foreground">{captionHint}</p>
+          </div>
+          <button type="button" onClick={() => onRemove(0)} aria-label="حذف ضمیمه" className="text-muted-foreground hover:text-destructive">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex gap-2 overflow-x-auto">
+            {atts.map((att, index) => (
+              <div key={`${att.url}-${index}`} className="relative shrink-0">
+                {att.type === "image" ? (
+                  <button type="button" onClick={() => onPreview(att)} aria-label={att.name} className="block h-16 w-16 overflow-hidden rounded-lg">
+                    <CachedImg src={att.url} alt={att.name} className="h-full w-full object-cover" />
+                  </button>
+                ) : (
+                  <div className="flex h-16 w-28 items-center gap-1 rounded-lg bg-background/70 px-2">
+                    <AttThumb att={att} />
+                    <span className="min-w-0 truncate text-[10px] font-bold" dir="auto">{att.name}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onRemove(index)}
+                  aria-label={`حذف ${att.name}`}
+                  className="absolute -start-1 -top-1 grid h-5 w-5 place-items-center rounded-full bg-background text-muted-foreground shadow-soft hover:text-destructive"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {uploading ? `در حال آپلود… ${fa(Math.round(uploadPct * 100))}٪` : captionHint}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DownloadAllButton({
+  items,
+  archiveName,
+  mine,
+  overlay,
+}: {
+  items: ChatAttachment[];
+  archiveName: string;
+  mine: boolean;
+  overlay?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-label="دانلود همه"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (busy) return;
+        setBusy(true);
+        void downloadAllAsZip(
+          items.map((item) => ({ url: item.url, name: item.name })),
+          archiveName,
+        )
+          .catch((err) => toast.error((err as Error).message || "دانلود ممکن نشد"))
+          .finally(() => setBusy(false));
+      }}
+      className={cn(
+        "inline-flex items-center justify-center gap-1 font-bold disabled:opacity-70",
+        overlay
+          ? "rounded-full bg-black/55 px-2 py-1 text-[10px] text-white backdrop-blur-sm"
+          : cn(
+              "w-full rounded-xl px-3 py-1.5 text-[11px]",
+              mine ? "bg-primary-foreground/15 text-primary-foreground" : "border border-border/50 bg-background/50",
+            ),
+      )}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+      دانلود همه
+    </button>
+  );
+}
+
+function IconSaveButton({ url, name, label }: { url: string; name: string; label: string }) {
+  const [pct, setPct] = useState<number | null>(null);
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={pct !== null}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (pct !== null) return;
+        setPct(0);
+        void saveRemoteFile(url, name, setPct)
+          .catch((err) => toast.error((err as Error).message || "دانلود ممکن نشد"))
+          .finally(() => setPct(null));
+      }}
+      className="grid h-7 w-7 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm disabled:opacity-70"
+    >
+      {pct !== null ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+function PhotoSlider({
+  photos,
+  time,
+  edited,
+  read,
+  pending,
+  mine,
+  showTime,
+  onPreview,
+}: {
+  photos: ChatAttachment[];
+  time: string;
+  edited?: boolean;
+  read?: boolean;
+  pending?: boolean;
+  mine: boolean;
+  showTime?: boolean;
+  onPreview?: (att: ChatAttachment) => void;
+}) {
+  const [index, setIndex] = useState(0);
+  const safe = Math.min(index, Math.max(photos.length - 1, 0));
+  const photo = photos[safe];
+  if (!photo) return null;
+  const step = (dir: number) => (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIndex((i) => (i + dir + photos.length) % photos.length);
+  };
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => onPreview?.(photo)}
+        className="block w-full cursor-zoom-in"
+        aria-label={`باز کردن ${photo.name}`}
+      >
+        <CachedImg src={photo.url} alt={photo.name} className="max-h-72 w-full object-cover" />
+      </button>
+      {photos.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={step(-1)}
+            aria-label="عکس قبلی"
+            className="absolute start-1.5 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={step(1)}
+            aria-label="عکس بعدی"
+            className="absolute end-1.5 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <span className="absolute start-1/2 top-1.5 -translate-x-1/2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm">
+            {fa(safe + 1)} / {fa(photos.length)}
+          </span>
+        </>
+      )}
+      <span className="absolute inset-x-1.5 bottom-1.5 flex items-end justify-between gap-1">
+        <span className="flex items-center gap-1">
+          <IconSaveButton url={photo.url} name={photo.name} label="دانلود این عکس" />
+          {photos.length > 1 && <DownloadAllButton items={photos} archiveName="pargar-photos.zip" mine={mine} overlay />}
+        </span>
+        {showTime && (
+          <span className="flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm">
+            <span>{edited ? `ویرایش‌شده · ${clock(time)}` : clock(time)}</span>
+            {mine &&
+              (pending ? (
+                <Clock className="h-3 w-3 animate-spin text-white/80 [animation-duration:1.6s]" />
+              ) : (
+                <SeenTicks read={read} />
+              ))}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function MultiAttach({
+  atts,
+  mine,
+  time,
+  edited,
+  read,
+  pending,
+  onPreview,
+  inset,
+  showTime,
+}: {
+  atts: ChatAttachment[];
+  mine: boolean;
+  time: string;
+  edited?: boolean;
+  read?: boolean;
+  pending?: boolean;
+  onPreview?: (att: ChatAttachment) => void;
+  inset?: boolean;
+  showTime?: boolean;
+}) {
+  const images = atts.filter((a) => a.type === "image");
+  const files = atts.filter((a) => a.type === "file");
+  const rest = atts.filter((a) => a.type !== "image" && a.type !== "file");
+  const photoOnly = images.length > 1 && files.length === 0 && rest.length === 0;
+  return (
+    <div>
+      {images.length > 1 && (
+        <div className={cn(inset && "-mx-3.5 -mt-3.5 mb-1.5 overflow-hidden rounded-t-2xl", inset && (mine ? "rounded-l-2xl" : "rounded-r-2xl"))}>
+          <PhotoSlider
+            photos={images}
+            mine={mine}
+            time={time}
+            edited={edited}
+            read={read}
+            pending={pending}
+            showTime={showTime && photoOnly}
+            onPreview={onPreview}
+          />
+        </div>
+      )}
+      {images.length === 1 && (
+        <div className={cn("relative", inset && "-mx-3.5 -mt-3.5 mb-1.5 overflow-hidden rounded-t-2xl", inset && (mine ? "rounded-l-2xl" : "rounded-r-2xl"))}>
+          <button type="button" onClick={() => onPreview?.(images[0])} className="block w-full" aria-label={`باز کردن ${images[0].name}`}>
+            <CachedImg src={images[0].url} alt={images[0].name} className="max-h-72 w-full object-cover" />
+          </button>
+          <span className="absolute bottom-1.5 start-1.5">
+            <IconSaveButton url={images[0].url} name={images[0].name} label="دانلود این عکس" />
+          </span>
+        </div>
+      )}
+      {(files.length > 0 || rest.length > 0) && (
+        <div className={cn("space-y-1.5", !inset && "px-3 py-2", inset && images.length > 0 && "px-0")}>
+          {rest.map((att, index) =>
+            att.type === "audio" ? (
+              <VoicePlayer key={`${att.url}-${index}`} att={att} mine={mine} />
+            ) : att.type === "video" ? (
+              <ChatVideoPlayer key={`${att.url}-${index}`} att={att} onPreview={() => onPreview?.(att)} />
+            ) : (
+              <FileSaveButton key={`${att.url}-${index}`} att={att} mine={mine} />
+            ),
+          )}
+          {files.map((att, index) => (
+            <FileSaveButton key={`${att.url}-${index}`} att={att} mine={mine} />
+          ))}
+          {files.length > 1 && <DownloadAllButton items={files} archiveName="pargar-files.zip" mine={mine} />}
+        </div>
+      )}
+      {showTime && !photoOnly && (
+        <span className={cn("mt-1 flex items-center gap-1 px-3 text-[10px] leading-none", mine ? "justify-end" : "justify-start")}>
+          {edited && <span className={cn("opacity-75", mine ? "text-primary-foreground/70" : "text-muted-foreground/70")}>ویرایش‌شده</span>}
+          <span className={cn("opacity-75", mine ? "text-primary-foreground/70" : "text-muted-foreground/70")}>{clock(time)}</span>
+          {mine &&
+            (pending ? (
+              <Clock className="h-3 w-3 animate-spin opacity-70 [animation-duration:1.6s]" />
+            ) : (
+              <SeenTicks read={read} />
+            ))}
         </span>
       )}
     </div>
@@ -3175,22 +4929,6 @@ function isMentorOf(role: string) {
   return role === "mentor" || role === "admin";
 }
 
-function bubbleDir(text: string): "rtl" | "ltr" {
-  for (const ch of text) {
-    if (ch === " " || ch === "\n" || ch === "\t") continue;
-    const code = ch.codePointAt(0) ?? 0;
-    const rtl =
-      (code >= 0x0600 && code <= 0x06ff) ||
-      (code >= 0x0750 && code <= 0x077f) ||
-      (code >= 0x08a0 && code <= 0x08ff) ||
-      (code >= 0xfb50 && code <= 0xfdff) ||
-      (code >= 0xfe70 && code <= 0xfeff);
-    if (rtl) return "rtl";
-    if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) return "ltr";
-  }
-  return "rtl";
-}
-
 function ChatThreadSkeleton() {
   return (
     <div className="space-y-3 pt-2" aria-busy="true" aria-label="در حال بارگذاری پیام‌ها">
@@ -3209,8 +4947,33 @@ function roleLabel(role: string) {
   return "هنرجو";
 }
 
+function presenceLabel(person?: { online?: boolean; lastSeen?: string }) {
+  if (!person) return "آفلاین";
+  if (person.online) return "آنلاین";
+  if (person.lastSeen) return `آخرین بازدید ${formatJalaliStamp(person.lastSeen)}`;
+  return "آفلاین";
+}
+
+function PresenceLine({ person }: { person?: { online?: boolean; lastSeen?: string } }) {
+  const online = !!person?.online;
+  return (
+    <span className={cn("block h-4 truncate text-[10px] leading-4", online ? "font-bold text-success" : "text-muted-foreground")}>
+      {presenceLabel(person)}
+    </span>
+  );
+}
+
 function fa(n: number) {
   return n.toLocaleString("fa-IR");
+}
+
+function broadcastAudienceLine(all: boolean, names: string[]): string {
+  if (all) return "به همهٔ فعال‌ها می‌رسد";
+  if (names.length === 0) return "گیرنده‌ای انتخاب نشده";
+  if (names.length === 1) return `به ${names[0]} می‌رسد`;
+  if (names.length === 2) return `به ${names[0]} و ${names[1]} می‌رسد`;
+  if (names.length === 3) return `به ${names[0]}، ${names[1]} و ${names[2]} می‌رسد`;
+  return `به ${fa(names.length)} نفر می‌رسد`;
 }
 
 function bytes(n: number) {
@@ -3245,9 +5008,16 @@ function dateLabel(iso: string) {
 }
 
 function previewOf(m: ChatMessage) {
-  if (m.attachment) {
-    const names: Record<string, string> = { image: "عکس", video: "ویدیو", audio: "پیام صوتی", file: m.attachment.name };
-    const label = names[m.attachment.type] ?? m.attachment.name;
+  const atts = messageAttachments(m);
+  if (atts.length > 1) {
+    if (m.body) return m.body;
+    if (atts.every((a) => a.type === "image")) return `${fa(atts.length)} عکس`;
+    if (atts.every((a) => a.type === "file")) return `${fa(atts.length)} فایل`;
+    return `${fa(atts.length)} پیوست`;
+  }
+  if (atts[0]) {
+    const names: Record<string, string> = { image: "عکس", video: "ویدیو", audio: "پیام صوتی", file: atts[0].name };
+    const label = names[atts[0].type] ?? atts[0].name;
     return m.body ? `${m.body}` : label;
   }
   return m.body;
@@ -3444,7 +5214,7 @@ function AutoTextarea({
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+    el.style.height = `${el.scrollHeight}px`;
   }, [value]);
   return (
     <textarea
@@ -3466,7 +5236,7 @@ function AutoTextarea({
       disabled={disabled}
       maxLength={MAX_LEN}
       dir="auto"
-      className="my-1 max-h-36 min-h-10 w-full resize-none bg-transparent px-1.5 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      className="chat-composer my-1 min-h-10 w-full min-w-0 resize-none bg-transparent px-1.5 py-2 text-sm leading-7 text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
     />
   );
 }
@@ -3512,8 +5282,14 @@ const QUICK_REACTIONS = ["❤️", "👍", "😂", "😮", "🔥", "🎉"];
 
 function quotePreview(m: ChatMessage): string {
   if (m.body) return m.body;
-  if (!m.attachment) return "پیام";
-  switch (m.attachment.type) {
+  const atts = messageAttachments(m);
+  if (atts.length > 1) {
+    if (atts.every((a) => a.type === "image")) return `📷 ${fa(atts.length)} عکس`;
+    if (atts.every((a) => a.type === "file")) return `📄 ${fa(atts.length)} فایل`;
+    return `📎 ${fa(atts.length)} پیوست`;
+  }
+  if (!atts[0]) return "پیام";
+  switch (atts[0].type) {
     case "image":
       return "📷 تصویر";
     case "video":
@@ -3521,7 +5297,7 @@ function quotePreview(m: ChatMessage): string {
     case "audio":
       return "🎙️ پیام صوتی";
     default:
-      return `📄 ${m.attachment.name}`;
+      return `📄 ${atts[0].name}`;
   }
 }
 
@@ -3545,6 +5321,7 @@ function MsgActions({
   onReact,
   onReactEmoji,
   onReply,
+  onSave,
   onCopy,
   onPin,
   onEdit,
@@ -3560,6 +5337,7 @@ function MsgActions({
   onReact: () => void;
   onReactEmoji: (emoji: string) => void;
   onReply: () => void;
+  onSave?: () => void;
   onCopy: () => void;
   onPin: () => void;
   onEdit?: () => void;
@@ -3630,6 +5408,15 @@ function MsgActions({
               )}
             </AnimatePresence>
           </div>
+          {onSave && (
+            <button
+              onClick={onSave}
+              aria-label="ذخیره"
+              className="grid h-6 w-6 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+            >
+              <Bookmark className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             onClick={onReply}
             aria-label="پاسخ"

@@ -2,16 +2,16 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Flame, Heart, Sparkles, Trophy, User as UserIcon } from "lucide-react";
+import { Flame, Heart, Sparkles, Trophy } from "lucide-react";
+import { useState } from "react";
 import { useAuth } from "@/lib/auth-store";
 import { http, toUserError } from "@/lib/api";
-import type { LeaderboardData } from "@/lib/types";
-import { Panel } from "@/components/panel";
+import type { LeaderboardData, MeetingEvent } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { UserAvatar, avatarPropsOf } from "@/components/ui/user-avatar";
 import { ProfileCertificateSlot } from "@/components/profile-certificate-slot";
+import { OwnerProfileHeader } from "@/components/profile-header";
 import { ChallengeCards } from "@/components/challenge-cards";
 import { AvatarStudio } from "@/components/avatar-studio";
 import {
@@ -20,8 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { formatFaNumber, formatStreakLabel } from "@/lib/utils";
-import { useState } from "react";
+import { formatFaNumber, formatJalaliStamp, formatStreakLabel } from "@/lib/utils";
 
 export default function ProfilePage() {
   const user = useAuth((s) => s.user);
@@ -45,56 +44,7 @@ export default function ProfilePage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      <Panel
-        title="پروفایل من"
-        description="هویت، آمار یادگیری، چالش‌ها و گواهینامه در یک نگاه."
-        icon={<UserIcon className="h-5 w-5" />}
-        tint="bg-primary/10 text-primary"
-        actions={
-          <Button variant="outline" size="sm" onClick={() => setStudioOpen(true)}>
-            ویرایش آواتار
-          </Button>
-        }
-      >
-        <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
-          <UserAvatar name={user.name} className="h-20 w-20" {...avatarPropsOf(user)} />
-          <div className="min-w-0 flex-1 space-y-2 text-center sm:text-start">
-            <h1 className="text-2xl font-black tracking-tight">{user.name}</h1>
-            <dl className="mt-1 space-y-2 text-sm">
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="shrink-0 text-xs text-muted-foreground">نام کاربری</dt>
-                <dd className="min-w-0 font-latin font-bold tracking-tight" dir="ltr">
-                  @{user.username}
-                </dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="shrink-0 text-xs text-muted-foreground">ایمیل</dt>
-                <dd className="min-w-0 break-all font-latin font-medium" dir="ltr">
-                  {user.email}
-                </dd>
-              </div>
-              {user.phone && (
-                <div className="flex items-baseline justify-between gap-3">
-                  <dt className="shrink-0 text-xs text-muted-foreground">تلفن</dt>
-                  <dd className="min-w-0 font-latin font-medium" dir="ltr">
-                    {user.phone}
-                  </dd>
-                </div>
-              )}
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="shrink-0 text-xs text-muted-foreground">عضویت از</dt>
-                <dd className="min-w-0 font-medium">
-                  {new Date(user.createdAt).toLocaleDateString("fa-IR", {
-                    year: "numeric",
-                    month: "long",
-                    day: "numeric",
-                  })}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </div>
-      </Panel>
+      <OwnerProfileHeader user={user} onEditAvatar={() => setStudioOpen(true)} />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <StatCard icon={<Sparkles className="h-4 w-4 text-gold" />} label="امتیاز کل" value={formatFaNumber(user.xp)} />
@@ -139,20 +89,188 @@ export default function ProfilePage() {
         <ChallengeCards />
       </div>
 
+      <ProfileActivity />
+
       <div>
         <h2 className="mb-2 text-sm font-black text-muted-foreground">گواهینامه</h2>
         <ProfileCertificateSlot />
       </div>
 
       <Dialog open={studioOpen} onOpenChange={setStudioOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[min(85vh,40rem)] max-w-lg flex-col gap-3 overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle className="text-center">ویرایش آواتار</DialogTitle>
           </DialogHeader>
           <AvatarStudio user={user} onClose={() => setStudioOpen(false)} />
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function ProfileActivity() {
+  const activityQ = useQuery({
+    queryKey: ["me-activity"],
+    queryFn: () => http.get<{ days: { day: string; count: number }[] }>("/api/me/activity"),
+  });
+  const eventsQ = useQuery({
+    queryKey: ["events", "profile"],
+    queryFn: () => http.get<{ events: MeetingEvent[] }>("/api/events"),
+  });
+
+  return (
+    <div>
+      <h2 className="mb-2 text-sm font-black text-muted-foreground">فعالیت</h2>
+      <Card>
+        <CardContent className="space-y-6 p-4">
+          <div>
+            <h3 className="text-sm font-black">تاریخچهٔ ماهانه</h3>
+            <p className="mt-1 text-xs text-muted-foreground">هر بار یک ماه. پررنگ‌تر یعنی فعالیت بیشتر.</p>
+            {activityQ.isPending ? (
+              <Skeleton className="mt-3 h-24 rounded-xl" aria-busy="true" aria-label="در حال بارگذاری نمودار فعالیت" />
+            ) : activityQ.isError ? (
+              <p className="mt-3 text-sm font-bold text-destructive">{toUserError(activityQ.error, "بارگذاری فعالیت ممکن نشد")}</p>
+            ) : (
+              <ActivityGrid days={activityQ.data?.days ?? []} />
+            )}
+          </div>
+          <div>
+            <h3 className="text-sm font-black">رویدادها</h3>
+            {eventsQ.isPending ? (
+              <p className="mt-2 text-sm text-muted-foreground" aria-busy="true">
+                در حال بارگذاری…
+              </p>
+            ) : eventsQ.isError ? (
+              <p className="mt-2 text-sm font-bold text-destructive">{toUserError(eventsQ.error, "بارگذاری رویدادها ممکن نشد")}</p>
+            ) : (eventsQ.data?.events ?? []).length === 0 ? (
+              <p className="mt-2 text-sm text-muted-foreground">رویدادی نیست.</p>
+            ) : (
+              <ul className="mt-3 divide-y divide-border rounded-xl border border-border">
+                {(eventsQ.data?.events ?? []).map((ev) => (
+                  <li key={ev.id} className="flex items-baseline justify-between gap-3 px-3 py-2.5 text-sm">
+                    <span className="font-bold">{ev.title}</span>
+                    <time className="shrink-0 text-xs text-muted-foreground" dateTime={ev.startsAt}>
+                      {formatJalaliStamp(ev.startsAt)}
+                    </time>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function activityCountLabel(count: number) {
+  if (count <= 0) return "بدون فعالیت";
+  return `${formatFaNumber(count)} فعالیت`;
+}
+
+const WEEKDAYS = ["ش", "ی", "د", "س", "چ", "پ", "ج"];
+
+function ActivityGrid({ days }: { days: { day: string; count: number }[] }) {
+  const [index, setIndex] = useState(0);
+  const map = new Map(days.map((d) => [d.day.slice(0, 10), d.count]));
+  const order: string[] = [];
+  const months = new Map<string, { label: string; cells: { day: string; count: number }[] }>();
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  for (let i = 119; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const id = jalaliMonthId(d);
+    if (!months.has(id)) {
+      order.push(id);
+      months.set(id, { label: jalaliMonth(d), cells: [] });
+    }
+    months.get(id)!.cells.push({ day: key, count: map.get(key) ?? 0 });
+  }
+  const newestFirst = [...order].reverse();
+  const safeIndex = Math.min(index, Math.max(newestFirst.length - 1, 0));
+  const id = newestFirst[safeIndex];
+  const month = id ? months.get(id) : undefined;
+  if (!month || !id) return null;
+  const pad = weekdayOffset(month.cells[0]?.day ?? "");
+
+  return (
+    <div className="mt-3" role="group" aria-label="تاریخچهٔ ماهانهٔ فعالیت، به تاریخ جلالی">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <Button type="button" variant="outline" size="sm" disabled={safeIndex <= 0} onClick={() => setIndex(safeIndex - 1)}>
+          ماه جدیدتر
+        </Button>
+        <h4 className="text-sm font-black">{month.label}</h4>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={safeIndex >= newestFirst.length - 1}
+          onClick={() => setIndex(safeIndex + 1)}
+        >
+          ماه قدیمی‌تر
+        </Button>
+      </div>
+      <div className="grid grid-cols-7 gap-1" dir="ltr">
+        {WEEKDAYS.map((name) => (
+          <span key={name} className="text-center text-[10px] font-bold text-muted-foreground" dir="rtl">
+            {name}
+          </span>
+        ))}
+        {Array.from({ length: pad }, (_, i) => (
+          <span key={`${id}-pad-${i}`} />
+        ))}
+        {month.cells.map((c) => {
+          const date = jalaliDay(c.day);
+          const countLabel = activityCountLabel(c.count);
+          return (
+            <button
+              key={c.day}
+              type="button"
+              aria-label={`${date}، ${countLabel}`}
+              className="group relative z-0 aspect-square min-h-0 w-full min-w-0 cursor-default appearance-none rounded-sm border-0 p-0 outline-none hover:z-30 focus-visible:z-30 focus-visible:ring-2 focus-visible:ring-ring"
+              style={{ background: c.count === 0 ? "var(--muted)" : `color-mix(in srgb, var(--primary) ${30 + Math.min(c.count, 6) * 12}%, white)` }}
+            >
+              <span
+                role="tooltip"
+                dir="rtl"
+                className="pointer-events-none absolute bottom-[calc(100%+0.35rem)] left-1/2 z-30 hidden w-max -translate-x-1/2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-start text-sm leading-snug text-card-foreground shadow-soft group-hover:block group-focus-visible:block"
+              >
+                <span className="block font-bold whitespace-nowrap">{date}</span>
+                <span className="block whitespace-nowrap text-muted-foreground">{countLabel}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function weekdayOffset(day: string) {
+  if (!day) return 0;
+  const d = new Date(day + "T12:00:00");
+  return (d.getDay() + 1) % 7;
+}
+
+function jalaliMonthId(d: Date) {
+  const parts = new Intl.DateTimeFormat("en-u-ca-persian", { year: "numeric", month: "2-digit" }).formatToParts(d);
+  const year = parts.find((p) => p.type === "year")?.value ?? "";
+  const month = parts.find((p) => p.type === "month")?.value ?? "";
+  return `${year}-${month}`;
+}
+
+function jalaliMonth(d: Date) {
+  const parts = new Intl.DateTimeFormat("fa-IR-u-ca-persian", { month: "long", year: "numeric" }).formatToParts(d);
+  const month = parts.find((p) => p.type === "month")?.value ?? "";
+  const year = parts.find((p) => p.type === "year")?.value ?? "";
+  return `${month} ${year}`;
+}
+
+function jalaliDay(day: string) {
+  return new Intl.DateTimeFormat("fa-IR-u-ca-persian", { year: "numeric", month: "short", day: "numeric" }).format(
+    new Date(day + "T12:00:00"),
   );
 }
 

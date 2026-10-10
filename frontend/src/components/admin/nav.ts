@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  Bot,
   BookOpen,
   CalendarPlus,
   DatabaseBackup,
@@ -33,6 +34,7 @@ export type AdminTabId =
   | "events"
   | "challenges"
   | "announce"
+  | "bots"
   | "chat-export"
   | "settings";
 
@@ -167,6 +169,13 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         adminOnly: true,
       },
       {
+        id: "bots",
+        label: "ربات",
+        description: "کلیدهای API، وضعیت، شمار درخواست و راهنمای اتصال.",
+        icon: Bot,
+        adminOnly: true,
+      },
+      {
         id: "chat-export",
         label: "آرشیو گفتگوها",
         description: "خروجی ساختاریافته و لینک دانلود موقت برای همه گفتگوهای پروژه.",
@@ -181,7 +190,7 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       {
         id: "settings",
         label: "تنظیمات سایت",
-        description: "حمایت مالی، گواهینامه فیزیکی و اسپانسرهای لندینگ.",
+        description: "شبکه‌ها، قلب‌ها، گواهینامه فیزیکی و اسپانسرهای لندینگ.",
         icon: Settings2,
         adminOnly: true,
       },

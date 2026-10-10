@@ -254,6 +254,31 @@
     border-radius: 999px;
     border-width: 0;
   }
+  textarea.chat-composer {
+    unicode-bidi: plaintext;
+    text-align: start;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    field-sizing: content;
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+  textarea.chat-composer:placeholder-shown {
+    direction: rtl;
+    text-align: right;
+  }
+  textarea.chat-composer::placeholder {
+    unicode-bidi: plaintext;
+    text-align: start;
+  }
+  .chat-bubble-text {
+    unicode-bidi: plaintext;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
+    text-align: start;
+  }
   .section-kicker {
     display: flex;
     align-items: center;

@@ -77,6 +77,10 @@ func (s *Server) handleQuizSubmit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, service.ErrQuizNotUnlocked.Error())
 		return
 	}
+	if !pg.PassedQuiz && !u.Role.IsStaff() && u.Hearts <= 0 {
+		writeErr(w, http.StatusForbidden, "جان‌ها تمام شده است. تا بازگشت یک جان صبر کنید.")
+		return
+	}
 
 	var req quizSubmitRequest
 	if err := bodyJSON(r, &req); err != nil {
@@ -155,15 +159,11 @@ func (s *Server) handleQuizSubmit(w http.ResponseWriter, r *http.Request) {
 			}
 			if cert, created, cerr := s.issueCertificateIfEligible(r.Context(), activeUser); cerr == nil && created && cert != nil {
 				observability.Activity("certificate.issued", "user_id", u.ID, "public_id", cert.PublicID)
-				go func() {
-					_ = s.notify.Notify(context.Background(), u.ID, "progress", "certificate_issued",
-						"گواهینامه آماده است", "دوره را به پایان رساندید. گواهینامه دیجیتال شما صادر شد.", "/c/"+cert.PublicID, nil)
-				}()
+				_ = s.notify.Notify(r.Context(), u.ID, "progress", "certificate_issued",
+					"گواهینامه آماده است", "دوره را به پایان رساندید. گواهینامه دیجیتال شما صادر شد.", "/c/"+cert.PublicID, nil)
 			}
-			go func() {
-				s.notifyQuizPassed(u.ID, lesson.Title, id, activeUser.StreakCurrent)
-				_ = s.notifyUnlockedLessons(u.ID, id)
-			}()
+			s.notifyQuizPassed(u.ID, lesson.Title, id, activeUser.StreakCurrent)
+			_ = s.notifyUnlockedLessons(u.ID, id)
 		}
 	} else if pg.PassedQuiz {
 		// Already cleared — practice attempts do not burn hearts.

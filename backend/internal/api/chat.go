@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,38 +19,59 @@ const maxUploadSize = 25 << 20 // 25 MB
 
 func (s *Server) handleListMentors(w http.ResponseWriter, r *http.Request) {
 	actor := currentUser(r)
-	var mentors []models.User
-	var err error
-	if actor.Role == models.RoleMentor || actor.Role == models.RoleAdmin {
-		mentors, _, err = s.store.ListUsers(r.Context(), "", "", 100, 0)
-	} else {
-		mentors, err = s.store.ListMentors(r.Context())
+	page := parsePageParams(r)
+	if page.PageSize < 20 {
+		page.PageSize = 20
+		page.Offset = (page.Page - 1) * page.PageSize
 	}
+	roles := []string{models.RoleMentor.String(), models.RoleAdmin.String()}
+	if actor.Role == models.RoleMentor || actor.Role == models.RoleAdmin {
+		roles = []string{models.RoleStudent.String(), models.RoleMentor.String(), models.RoleAdmin.String()}
+	}
+	people, total, err := s.store.ListActiveByRoles(r.Context(), roles, page.PageSize, page.Offset)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "بارگذاری منتورها ممکن نشد")
+		writeErr(w, http.StatusInternalServerError, "بارگذاری افراد ممکن نشد")
 		return
 	}
-	safe := make([]map[string]any, 0, len(mentors))
-	for _, m := range mentors {
-		if m.ID == actor.ID || !m.IsActive {
-			continue
+	ids := make([]int64, 0, len(people))
+	for _, m := range people {
+		if m.ID != actor.ID {
+			ids = append(ids, m.ID)
 		}
-		if actor.Role == models.RoleStudent && m.Role != models.RoleMentor && m.Role != models.RoleAdmin {
+	}
+	seen, _ := s.store.LastSeenByIDs(r.Context(), ids)
+	safe := make([]map[string]any, 0, len(people))
+	for _, m := range people {
+		if m.ID == actor.ID {
 			continue
 		}
 		s.signUserMedia(&m)
-		safe = append(safe, map[string]any{
+		item := map[string]any{
 			"id": m.ID, "name": m.Name, "email": m.Email, "role": m.Role,
 			"avatarVariant": m.AvatarVariant, "avatarPalette": m.AvatarPalette, "avatarPhoto": m.AvatarPhoto,
-		})
+			"online": s.hub.Online(m.ID),
+		}
+		if ts, ok := seen[m.ID]; ok && !ts.IsZero() {
+			item["lastSeen"] = ts.UTC()
+		}
+		safe = append(safe, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mentors": safe})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mentors":  safe,
+		"total":    total,
+		"page":     page.Page,
+		"pageSize": page.PageSize,
+	})
 }
 
 type conversation struct {
-	Partner     map[string]any      `json:"partner"`
-	LastMessage *models.ChatMessage `json:"lastMessage,omitempty"`
-	UnreadCount int                 `json:"unreadCount"`
+	Partner      map[string]any      `json:"partner"`
+	LastMessage  *models.ChatMessage `json:"lastMessage,omitempty"`
+	UnreadCount  int                 `json:"unreadCount"`
+	MessageCount int                 `json:"messageCount"`
+	PinnedRank   *int                `json:"pinnedRank"`
+	Muted        bool                `json:"muted"`
+	Archived     bool                `json:"archived"`
 }
 
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
@@ -94,9 +116,21 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	showArchived := r.URL.Query().Get("archived") == "1"
+	partnerIDs := make([]int64, 0, len(partners))
+	for _, p := range partners {
+		if p.ID != u.ID {
+			partnerIDs = append(partnerIDs, p.ID)
+		}
+	}
+	seen, _ := s.store.LastSeenByIDs(r.Context(), partnerIDs)
 	out := make([]conversation, 0, len(partners))
 	for _, p := range partners {
 		if !s.canChatWith(r.Context(), u, p.ID) {
+			continue
+		}
+		pref := s.store.ChatPref(r.Context(), u.ID, p.ID)
+		if pref.Archived != showArchived {
 			continue
 		}
 		msgs, err := s.store.ListChatMessages(r.Context(), u.ID, p.ID, 0, 100)
@@ -118,23 +152,95 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			s.signUserMedia(tmp)
 			photo = tmp.AvatarPhoto
 		}
+		name := p.Name
+		saved := p.ID == u.ID
+		if saved {
+			name = "پیام‌های ذخیره‌شده"
+		}
+		partner := map[string]any{
+			"id": p.ID, "name": name, "email": p.Email, "role": p.Role,
+			"avatarVariant": p.AvatarVariant, "avatarPalette": p.AvatarPalette, "avatarPhoto": photo,
+			"online": !saved && s.hub.Online(p.ID), "saved": saved,
+		}
+		if !saved {
+			if ts, ok := seen[p.ID]; ok && !ts.IsZero() {
+				partner["lastSeen"] = ts.UTC()
+			}
+		}
 		conv := conversation{
-			Partner: map[string]any{
-				"id": p.ID, "name": p.Name, "email": p.Email, "role": p.Role,
-				"avatarVariant": p.AvatarVariant, "avatarPalette": p.AvatarPalette, "avatarPhoto": photo,
-				"online": s.hub.Online(p.ID),
-			},
-			UnreadCount: unread,
+			Partner:      partner,
+			UnreadCount:  unread,
+			MessageCount: len(msgs),
+			PinnedRank:   pref.PinnedRank,
+			Muted:        pref.Muted,
+			Archived:     pref.Archived,
 		}
 		if last != nil {
 			conv.LastMessage = last
 		}
 		out = append(out, conv)
 	}
+	if !showArchived {
+		hasSelf := false
+		for _, c := range out {
+			if id, _ := c.Partner["id"].(int64); id == u.ID {
+				hasSelf = true
+				break
+			}
+		}
+		if !hasSelf {
+			out = append(out, conversation{
+				Partner: map[string]any{
+					"id": u.ID, "name": "پیام‌های ذخیره‌شده", "email": u.Email, "role": u.Role,
+					"avatarVariant": u.AvatarVariant, "avatarPalette": u.AvatarPalette, "avatarPhoto": u.AvatarPhoto,
+					"online": false, "saved": true,
+				},
+			})
+		}
+	}
 	if out == nil {
 		out = []conversation{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"conversations": out})
+	sort.SliceStable(out, func(i, j int) bool {
+		pi, pj := out[i].PinnedRank, out[j].PinnedRank
+		if (pi != nil) != (pj != nil) {
+			return pi != nil
+		}
+		if pi != nil && pj != nil && *pi != *pj {
+			return *pi < *pj
+		}
+		ti := time.Time{}
+		tj := time.Time{}
+		if out[i].LastMessage != nil {
+			ti = out[i].LastMessage.CreatedAt
+		}
+		if out[j].LastMessage != nil {
+			tj = out[j].LastMessage.CreatedAt
+		}
+		return ti.After(tj)
+	})
+	total := len(out)
+	slice := out
+	page := pageParams{Page: 1, PageSize: total}
+	if r.URL.Query().Get("page") != "" || r.URL.Query().Get("pageSize") != "" {
+		page = parsePageParams(r)
+		start := page.Offset
+		if start > total {
+			start = total
+		}
+		end := start + page.PageSize
+		if end > total {
+			end = total
+		}
+		slice = out[start:end]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conversations": slice,
+		"total":         total,
+		"page":          page.Page,
+		"pageSize":      page.PageSize,
+		"mutedAll":      s.store.ChatMutedAll(r.Context(), u.ID),
+	})
 }
 
 func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
@@ -224,43 +330,22 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Body       string             `json:"body"`
-		ReplyTo    *int64             `json:"replyTo"`
-		Attachment *models.Attachment `json:"attachment,omitempty"`
+		Body        string              `json:"body"`
+		ReplyTo     *int64              `json:"replyTo"`
+		Attachment  *models.Attachment  `json:"attachment,omitempty"`
+		Attachments []models.Attachment `json:"attachments,omitempty"`
 	}
 	if err := bodyJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "دادهٔ ارسالی نامعتبر است")
 		return
 	}
 	req.Body = strings.TrimSpace(req.Body)
-	if att := req.Attachment; att != nil {
-		if att.Size > maxUploadSize {
-			writeErr(w, http.StatusBadRequest, "حجم پیوست بیش از حد مجاز است")
-			return
-		}
-		att.Type = strings.ToLower(att.Type)
-		if att.Type != "image" && att.Type != "video" && att.Type != "audio" && att.Type != "file" {
-			writeErr(w, http.StatusBadRequest, "نوع پیوست پشتیبانی نمی‌شود")
-			return
-		}
-		if att.URL == "" || !strings.Contains(att.URL, "/media/") {
-			writeErr(w, http.StatusBadRequest, "نشانی پیوست نامعتبر است")
-			return
-		}
-		key := mediaKeyFromURL(att.URL)
-		if !mediaKeyOwnedByUser(key, u.ID) {
-			writeErr(w, http.StatusBadRequest, "پیوست متعلق به شما نیست")
-			return
-		}
-		// Persist without signature query — re-signed when messages are returned.
-		if q := strings.Index(att.URL, "?"); q >= 0 {
-			att.URL = att.URL[:q]
-		}
-		if att.Name == "" {
-			att.Name = "file"
-		}
+	atts, attErr := prepareChatAttachments(u.ID, req.Attachment, req.Attachments)
+	if attErr != "" {
+		writeErr(w, http.StatusBadRequest, attErr)
+		return
 	}
-	if req.Body == "" && req.Attachment == nil {
+	if req.Body == "" && len(atts) == 0 {
 		writeErr(w, http.StatusBadRequest, "پیام باید شامل متن یا فایل باشد")
 		return
 	}
@@ -281,7 +366,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		mentorID = u.ID
 	}
 
-	msg, err := s.store.AddChatMessage(r.Context(), studentID, mentorID, u.Role, req.Body, req.ReplyTo, req.Attachment)
+	msg, err := s.store.AddChatMessage(r.Context(), studentID, mentorID, u.Role, req.Body, req.ReplyTo, atts)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "ارسال پیام ممکن نشد")
 		return
@@ -291,6 +376,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	// live push chat_message to both participants
 	s.hub.Push(u.ID, map[string]any{"type": "chat_message", "item": msg, "from": u.ID})
 	s.hub.Push(partnerID, map[string]any{"type": "chat_message", "item": msg, "from": u.ID})
+	s.noteBotReply(r, partnerID, req.Body)
 
 	// notify the recipient
 	if u.Role == models.RoleMentor || u.Role == models.RoleAdmin {
@@ -352,8 +438,14 @@ func (s *Server) handleChatEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	msgID := routeID(r, "id")
 	var req struct {
-		Body       string             `json:"body"`
-		Attachment *models.Attachment `json:"attachment,omitempty"`
+		Body           string              `json:"body"`
+		Attachment     *models.Attachment  `json:"attachment,omitempty"`
+		AddAttachments []models.Attachment `json:"addAttachments,omitempty"`
+		RemoveIndexes  []int               `json:"removeIndexes,omitempty"`
+		Replacements   []struct {
+			Index      int               `json:"index"`
+			Attachment models.Attachment `json:"attachment"`
+		} `json:"replacements,omitempty"`
 	}
 	if err := bodyJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "دادهٔ ارسالی نامعتبر است")
@@ -365,36 +457,73 @@ func (s *Server) handleChatEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var (
-		msg *models.ChatMessage
-		err error
-	)
-	if req.Attachment != nil {
-		att := req.Attachment
-		att.Type = strings.ToLower(strings.TrimSpace(att.Type))
-		if att.Type != "image" && att.Type != "video" && att.Type != "audio" {
-			writeErr(w, http.StatusBadRequest, "فقط عکس، ویدیو یا صدا را می‌توان جایگزین کرد")
-			return
-		}
-		key := mediaKeyFromURL(att.URL)
-		if key == "" || !mediaKeyOwnedByUser(key, u.ID) {
-			writeErr(w, http.StatusBadRequest, "پیوست متعلق به شما نیست")
-			return
-		}
-		if q := strings.Index(att.URL, "?"); q >= 0 {
-			att.URL = att.URL[:q]
-		}
-		if att.Name == "" {
-			att.Name = "file"
-		}
-		msg, err = s.store.ReplaceChatAttachment(r.Context(), u.ID, partner, msgID, u.Role, req.Body, att.Type, att.URL, att.Name, att.Size)
-	} else {
-		if req.Body == "" {
-			writeErr(w, http.StatusBadRequest, "پیام باید بین ۱ تا ۴۰۰۰ نویسه باشد")
-			return
-		}
-		msg, err = s.store.EditChatMessage(r.Context(), u.ID, partner, msgID, u.Role, req.Body)
+	current, err := s.store.GetOwnChatMessage(r.Context(), u.ID, partner, msgID, u.Role)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "پیام پیدا نشد")
+		return
 	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "ویرایش پیام ممکن نشد")
+		return
+	}
+
+	existing := storedAttachments(current)
+	drop := map[int]struct{}{}
+	for _, index := range req.RemoveIndexes {
+		if index < 0 || index >= len(existing) {
+			writeErr(w, http.StatusBadRequest, "پیوست انتخاب‌شده پیدا نشد")
+			return
+		}
+		drop[index] = struct{}{}
+	}
+	for _, rep := range req.Replacements {
+		if _, removed := drop[rep.Index]; removed {
+			continue
+		}
+		if rep.Index < 0 || rep.Index >= len(existing) {
+			writeErr(w, http.StatusBadRequest, "پیوست انتخاب‌شده پیدا نشد")
+			return
+		}
+		prepared, attErr := prepareChatAttachments(u.ID, &rep.Attachment, nil)
+		if attErr != "" {
+			writeErr(w, http.StatusBadRequest, attErr)
+			return
+		}
+		if prepared[0].Type != existing[rep.Index].Type {
+			writeErr(w, http.StatusBadRequest, "فایل جدید باید از همان نوع باشد")
+			return
+		}
+		existing[rep.Index] = prepared[0]
+	}
+
+	toAdd := req.AddAttachments
+	if req.Attachment != nil {
+		toAdd = append(toAdd, *req.Attachment)
+	}
+	added, attErr := prepareChatAttachments(u.ID, nil, toAdd)
+	if attErr != "" {
+		writeErr(w, http.StatusBadRequest, attErr)
+		return
+	}
+
+	final := make([]models.Attachment, 0, len(existing)+len(added))
+	for i, att := range existing {
+		if _, removed := drop[i]; removed {
+			continue
+		}
+		final = append(final, att)
+	}
+	final = append(final, added...)
+	if len(final) > maxChatAttachments {
+		writeErr(w, http.StatusBadRequest, "در هر پیام حداکثر ۱۰ پیوست می‌توان فرستاد")
+		return
+	}
+	if req.Body == "" && len(final) == 0 {
+		writeErr(w, http.StatusBadRequest, "پیام باید متن یا پیوست داشته باشد")
+		return
+	}
+
+	msg, err := s.store.SaveEditedChatMessage(r.Context(), u.ID, partner, msgID, u.Role, req.Body, final)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "پیام پیدا نشد")
 		return
@@ -566,8 +695,11 @@ func (s *Server) markIncomingChatRead(ctx context.Context, reader *models.User, 
 }
 
 func (s *Server) canChatWith(ctx context.Context, actor *models.User, partnerID int64) bool {
-	if actor == nil || partnerID <= 0 || actor.ID == partnerID {
+	if actor == nil || partnerID <= 0 {
 		return false
+	}
+	if actor.ID == partnerID {
+		return true
 	}
 	partner, err := s.store.GetUserByID(ctx, partnerID)
 	if err != nil || !partner.IsActive {
@@ -586,10 +718,75 @@ func (s *Server) resignChatMessages(msgs []models.ChatMessage) {
 }
 
 func (s *Server) resignChatMessage(msg *models.ChatMessage) {
-	if msg == nil || msg.Attachment == nil || msg.Attachment.URL == "" {
+	if msg == nil {
 		return
 	}
-	msg.Attachment.URL = s.signExistingMediaURL(msg.Attachment.URL)
+	for i := range msg.Attachments {
+		if msg.Attachments[i].URL != "" {
+			msg.Attachments[i].URL = s.signExistingMediaURL(msg.Attachments[i].URL)
+		}
+	}
+	if len(msg.Attachments) > 0 {
+		first := msg.Attachments[0]
+		msg.Attachment = &first
+		return
+	}
+	if msg.Attachment != nil && msg.Attachment.URL != "" {
+		msg.Attachment.URL = s.signExistingMediaURL(msg.Attachment.URL)
+	}
+}
+
+func storedAttachments(m *models.ChatMessage) []models.Attachment {
+	if m == nil {
+		return nil
+	}
+	if len(m.Attachments) > 0 {
+		out := make([]models.Attachment, len(m.Attachments))
+		copy(out, m.Attachments)
+		return out
+	}
+	if m.Attachment != nil && m.Attachment.URL != "" {
+		return []models.Attachment{*m.Attachment}
+	}
+	return nil
+}
+
+const maxChatAttachments = 10
+
+func prepareChatAttachments(ownerID int64, single *models.Attachment, many []models.Attachment) ([]models.Attachment, string) {
+	atts := many
+	if len(atts) == 0 && single != nil {
+		atts = []models.Attachment{*single}
+	}
+	if len(atts) > maxChatAttachments {
+		return nil, "در هر پیام حداکثر ۱۰ پیوست می‌توان فرستاد"
+	}
+	out := make([]models.Attachment, 0, len(atts))
+	for i := range atts {
+		att := atts[i]
+		if att.Size > maxUploadSize {
+			return nil, "حجم پیوست بیش از حد مجاز است"
+		}
+		att.Type = strings.ToLower(strings.TrimSpace(att.Type))
+		if att.Type != "image" && att.Type != "video" && att.Type != "audio" && att.Type != "file" {
+			return nil, "نوع پیوست پشتیبانی نمی‌شود"
+		}
+		if att.URL == "" || !strings.Contains(att.URL, "/media/") {
+			return nil, "نشانی پیوست نامعتبر است"
+		}
+		key := mediaKeyFromURL(att.URL)
+		if !mediaKeyOwnedByUser(key, ownerID) {
+			return nil, "پیوست متعلق به شما نیست"
+		}
+		if q := strings.Index(att.URL, "?"); q >= 0 {
+			att.URL = att.URL[:q]
+		}
+		if strings.TrimSpace(att.Name) == "" {
+			att.Name = "file"
+		}
+		out = append(out, att)
+	}
+	return out, ""
 }
 
 func itoa(v int64) string {

@@ -80,41 +80,88 @@ func TestChatReplaceAttachment(t *testing.T) {
 	msgID := int64(msg["id"].(float64))
 	oldPath := mediaPath(msg["attachment"].(map[string]any)["url"])
 
+	code, body = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
+		"body": "کپشن صدا",
+	})
+	if code != 200 {
+		t.Fatalf("caption: %d %v", code, body)
+	}
+	captioned := body["message"].(map[string]any)
+	if captioned["body"] != "کپشن صدا" || captioned["editedAt"] == nil {
+		t.Fatalf("caption edit: %v", captioned)
+	}
+	if mediaPath(captioned["attachment"].(map[string]any)["url"]) != oldPath {
+		t.Fatalf("caption edit replaced the file: %v", captioned)
+	}
+
+	code, body = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
+		"body": "",
+	})
+	if code != 200 {
+		t.Fatalf("clear caption: %d %v", code, body)
+	}
+	cleared := body["message"].(map[string]any)
+	if cleared["body"] != "" || mediaPath(cleared["attachment"].(map[string]any)["url"]) != oldPath {
+		t.Fatalf("empty caption should keep the file: %v", cleared)
+	}
+
 	png[8] = 0x01
 	code, up = uploadChatFile(t, e, student, "two.png", png)
+	if code != 201 {
+		t.Fatalf("upload extra: %d %v", code, up)
+	}
+	extra := up["attachment"].(map[string]any)
+	code, body = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
+		"body":       "کپشن صدا",
+		"attachment": extra,
+	})
+	if code != 200 {
+		t.Fatalf("append: %d %v", code, body)
+	}
+	appended := body["message"].(map[string]any)
+	appendedAtts := appended["attachments"].([]any)
+	if len(appendedAtts) != 2 || mediaPath(appendedAtts[0].(map[string]any)["url"]) != oldPath {
+		t.Fatalf("append wiped the original: %v", appended)
+	}
+	if mediaPath(appendedAtts[1].(map[string]any)["url"]) == "" || mediaPath(appendedAtts[1].(map[string]any)["url"]) == oldPath {
+		t.Fatalf("appended file: %v", appendedAtts)
+	}
+
+	png[8] = 0x02
+	code, up = uploadChatFile(t, e, student, "three.png", png)
 	if code != 201 {
 		t.Fatalf("upload replacement: %d %v", code, up)
 	}
 	next := up["attachment"].(map[string]any)
-
 	code, body = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
-		"body":       "",
-		"attachment": next,
+		"body":         "کپشن صدا",
+		"replacements": []any{map[string]any{"index": 0, "attachment": next}},
 	})
 	if code != 200 {
 		t.Fatalf("replace: %d %v", code, body)
 	}
 	edited := body["message"].(map[string]any)
-	newPath := mediaPath(edited["attachment"].(map[string]any)["url"])
-	if edited["editedAt"] == nil || newPath == "" || newPath == oldPath {
-		t.Fatalf("expected a replaced attachment, old %s new %v", oldPath, edited)
+	editedAtts := edited["attachments"].([]any)
+	newPath := mediaPath(editedAtts[0].(map[string]any)["url"])
+	if edited["editedAt"] == nil || len(editedAtts) != 2 || newPath == "" || newPath == oldPath {
+		t.Fatalf("expected only the first file to be replaced, got %v", edited)
 	}
-	if edited["attachment"].(map[string]any)["type"] != "image" {
-		t.Fatalf("type: %v", edited["attachment"])
+	if mediaPath(editedAtts[1].(map[string]any)["url"]) != mediaPath(extra["url"]) {
+		t.Fatalf("replace dropped the added file: %v", editedAtts)
 	}
 
 	wrong := map[string]any{"type": "video", "url": next["url"], "name": "clip.mp4", "size": next["size"]}
 	code, _ = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
-		"body":       "",
-		"attachment": wrong,
+		"body":         "کپشن صدا",
+		"replacements": []any{map[string]any{"index": 0, "attachment": wrong}},
 	})
-	if code != 404 {
-		t.Fatalf("different kind should miss: %d", code)
+	if code != 400 {
+		t.Fatalf("different kind should be rejected: %d", code)
 	}
 
 	code, _ = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
-		"body":       "",
-		"attachment": map[string]any{"type": "file", "url": next["url"], "name": "x.pdf", "size": 1},
+		"body":         "",
+		"replacements": []any{map[string]any{"index": 0, "attachment": map[string]any{"type": "file", "url": next["url"], "name": "x.pdf", "size": 1}}},
 	})
 	if code != 400 {
 		t.Fatalf("file replace: %d", code)
@@ -124,8 +171,8 @@ func TestChatReplaceAttachment(t *testing.T) {
 		"body":       "",
 		"attachment": next,
 	})
-	if code != 400 {
-		t.Fatalf("partner replace: %d", code)
+	if code != 404 {
+		t.Fatalf("partner edit should be rejected: %d", code)
 	}
 }
 
@@ -176,6 +223,110 @@ func TestChatReadMarksOnlyIncoming(t *testing.T) {
 	}
 	if chatMsg(t, body, studentMsg)["readAt"] == nil {
 		t.Fatalf("already seen incoming message lost its receipt")
+	}
+}
+
+func TestChatSendMultipleAttachments(t *testing.T) {
+	e := setup(t)
+	student, _ := register(t, e, "Album Student", "album-student@test.dev")
+	admin := login(t, e, bootstrapAdminEmail)
+	code, me := e.do(t, "GET", "/api/auth/me", admin, nil)
+	if code != 200 {
+		t.Fatalf("me: %d %v", code, me)
+	}
+	adminID := int64(me["user"].(map[string]any)["id"].(float64))
+
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
+	code, up1 := uploadChatFile(t, e, student, "one.png", png)
+	if code != 201 {
+		t.Fatalf("upload one: %d %v", code, up1)
+	}
+	png[8] = 0x01
+	code, up2 := uploadChatFile(t, e, student, "two.png", png)
+	if code != 201 {
+		t.Fatalf("upload two: %d %v", code, up2)
+	}
+	a := up1["attachment"].(map[string]any)
+	b := up2["attachment"].(map[string]any)
+
+	code, body := e.do(t, "POST", "/api/chats/"+itoa(adminID)+"/messages", student, map[string]any{
+		"body":        "کپشن مشترک",
+		"attachments": []any{a, b},
+	})
+	if code != 201 {
+		t.Fatalf("send album: %d %v", code, body)
+	}
+	msg := body["message"].(map[string]any)
+	if msg["body"] != "کپشن مشترک" {
+		t.Fatalf("caption: %v", msg["body"])
+	}
+	atts := msg["attachments"].([]any)
+	if len(atts) != 2 {
+		t.Fatalf("attachments: %v", msg["attachments"])
+	}
+	if mediaPath(atts[0].(map[string]any)["url"]) == "" || mediaPath(atts[0].(map[string]any)["url"]) == mediaPath(atts[1].(map[string]any)["url"]) {
+		t.Fatalf("photo urls: %v", atts)
+	}
+	if mediaPath(msg["attachment"].(map[string]any)["url"]) != mediaPath(atts[0].(map[string]any)["url"]) {
+		t.Fatalf("first attachment should mirror the album: %v", msg["attachment"])
+	}
+	msgID := int64(msg["id"].(float64))
+
+	code, body = e.do(t, "GET", "/api/chats/"+itoa(adminID)+"/messages", student, nil)
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, body)
+	}
+	listed := chatMsg(t, body, msgID)
+	if listed["readAt"] != nil {
+		t.Fatalf("own album was marked seen: %v", listed)
+	}
+	listedAtts := listed["attachments"].([]any)
+	if len(listedAtts) != 2 || listed["body"] != "کپشن مشترک" {
+		t.Fatalf("listed album: %v", listed)
+	}
+
+	code, body = e.do(t, "PUT", "/api/chats/"+itoa(adminID)+"/messages/"+itoa(msgID), student, map[string]any{
+		"body": "کپشن ویرایش‌شده",
+	})
+	if code != 200 {
+		t.Fatalf("album caption: %d %v", code, body)
+	}
+	albumEdit := body["message"].(map[string]any)
+	albumAtts := albumEdit["attachments"].([]any)
+	if albumEdit["body"] != "کپشن ویرایش‌شده" || len(albumAtts) != 2 {
+		t.Fatalf("album caption edit: %v", albumEdit)
+	}
+	if mediaPath(albumAtts[0].(map[string]any)["url"]) != mediaPath(atts[0].(map[string]any)["url"]) ||
+		mediaPath(albumAtts[1].(map[string]any)["url"]) != mediaPath(atts[1].(map[string]any)["url"]) {
+		t.Fatalf("album caption edit changed photos: %v", albumAtts)
+	}
+
+	code, up3 := uploadChatFile(t, e, student, "notes.txt", []byte("hello"))
+	if code != 201 {
+		t.Fatalf("upload txt: %d %v", code, up3)
+	}
+	code, up4 := uploadChatFile(t, e, student, "more.txt", []byte("world"))
+	if code != 201 {
+		t.Fatalf("upload txt 2: %d %v", code, up4)
+	}
+	code, body = e.do(t, "POST", "/api/chats/"+itoa(adminID)+"/messages", student, map[string]any{
+		"attachments": []any{up3["attachment"], up4["attachment"]},
+	})
+	if code != 201 {
+		t.Fatalf("send files: %d %v", code, body)
+	}
+	files := body["message"].(map[string]any)["attachments"].([]any)
+	if len(files) != 2 || files[0].(map[string]any)["type"] != "file" || files[1].(map[string]any)["name"] != "more.txt" {
+		t.Fatalf("files: %v", files)
+	}
+
+	many := make([]any, 0, 11)
+	for i := 0; i < 11; i++ {
+		many = append(many, a)
+	}
+	code, _ = e.do(t, "POST", "/api/chats/"+itoa(adminID)+"/messages", student, map[string]any{"attachments": many})
+	if code != 400 {
+		t.Fatalf("too many: %d", code)
 	}
 }
 

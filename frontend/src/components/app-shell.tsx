@@ -11,6 +11,15 @@ import { http } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { hasInfiniteHearts } from "@/lib/hearts";
 
+function SiteFooter() {
+  return (
+    <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-3 px-4 py-8 sm:flex-row sm:px-6">
+      <BrandMark size="sm" logoOnly />
+      <p className="text-xs text-muted-foreground">بوت‌کمپ ۱۲ هفته‌ای · توسعه‌یافته توسط امیرحسین پناهی‌فر</p>
+    </div>
+  );
+}
+
 function isPublic(p: string) {
   return p === "/" || p === "/login";
 }
@@ -25,6 +34,7 @@ const PROTECTED_PREFIXES = [
   "/notifications",
   "/lockout",
   "/profile",
+  "/settings",
 ];
 
 function needsAuth(p: string) {
@@ -141,12 +151,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {allowChildren ? children : null}
       </main>
       <footer className="border-t border-border/70 bg-muted/20 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-3 px-4 py-8 sm:flex-row sm:px-6">
-          <BrandMark size="sm" logoOnly />
-          <p className="text-xs text-muted-foreground">
-            بوت‌کمپ ۱۲ هفته‌ای · توسعه‌یافته توسط امیرحسین پناهی‌فر
-          </p>
-        </div>
+        <SiteFooter />
       </footer>
       {user && <ChatWidget />}
     </div>

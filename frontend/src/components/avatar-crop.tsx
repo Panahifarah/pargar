@@ -20,12 +20,16 @@ function clamp(v: number, lo: number, hi: number) {
 export function AvatarCropDialog({
   file,
   busy,
+  error,
   onCancel,
+  onInvalid,
   onCrop,
 }: {
   file: File | null;
   busy?: boolean;
+  error?: string | null;
   onCancel: () => void;
+  onInvalid?: () => void;
   onCrop: (blob: Blob) => Promise<void> | void;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
@@ -33,25 +37,68 @@ export function AvatarCropDialog({
   const [C, setC] = useState(280);
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [localError, setLocalError] = useState<string | null>(null);
   const drag = useRef<{ sx: number; sy: number; px: number; py: number } | null>(null);
+  const onInvalidRef = useRef(onInvalid);
+  onInvalidRef.current = onInvalid;
+  const fittedFor = useRef<HTMLImageElement | null>(null);
+  const fittedSize = useRef(0);
 
   useEffect(() => {
-    if (!file) return;
+    if (!file) {
+      setImg(null);
+      return;
+    }
+    let cancel = false;
+    setLocalError(null);
     const url = URL.createObjectURL(file);
     const el = new Image();
-    el.onload = () => setImg({ el, w: el.naturalWidth, h: el.naturalHeight });
+    el.onload = () => {
+      if (cancel) return;
+      setImg({ el, w: el.naturalWidth, h: el.naturalHeight });
+    };
+    el.onerror = () => {
+      if (cancel) return;
+      setImg(null);
+      onInvalidRef.current?.();
+    };
     el.src = url;
-    return () => URL.revokeObjectURL(url);
+    return () => {
+      cancel = true;
+      URL.revokeObjectURL(url);
+    };
   }, [file]);
 
   useEffect(() => {
     if (!img) return;
-    const box = boxRef.current;
-    const size = Math.min(box?.clientWidth ?? 280, 320);
-    setC(size);
-    const minScale = size / Math.min(img.w, img.h);
-    setScale(minScale);
-    setPan({ x: (size - img.w * minScale) / 2, y: (size - img.h * minScale) / 2 });
+    let ro: ResizeObserver | null = null;
+    let frame = 0;
+    let tries = 0;
+    const fit = () => {
+      const box = boxRef.current;
+      if (!box) {
+        if (tries++ < 40) frame = requestAnimationFrame(fit);
+        return;
+      }
+      if (!ro) {
+        ro = new ResizeObserver(fit);
+        ro.observe(box);
+      }
+      const size = Math.round(Math.min(box.clientWidth, 320));
+      if (size < 8) return;
+      setC(size);
+      if (fittedFor.current === img.el && Math.abs(fittedSize.current - size) < 2) return;
+      fittedFor.current = img.el;
+      fittedSize.current = size;
+      const min = size / Math.min(img.w, img.h);
+      setScale(min);
+      setPan({ x: (size - img.w * min) / 2, y: (size - img.h * min) / 2 });
+    };
+    fit();
+    return () => {
+      cancelAnimationFrame(frame);
+      ro?.disconnect();
+    };
   }, [img]);
 
   const minScale = img ? C / Math.min(img.w, img.h) : 1;
@@ -94,12 +141,13 @@ export function AvatarCropDialog({
   };
 
   const confirm = async () => {
-    if (!img) return;
+    if (!img || !(scale > 0) || C < 8) return;
     const cropSize = C / scale;
     let cx = -pan.x / scale;
     let cy = -pan.y / scale;
-    cx = clamp(cx, 0, img.w - cropSize);
-    cy = clamp(cy, 0, img.h - cropSize);
+    if (!(cropSize > 0) || !Number.isFinite(cx) || !Number.isFinite(cy)) return;
+    cx = clamp(cx, 0, Math.max(0, img.w - cropSize));
+    cy = clamp(cy, 0, Math.max(0, img.h - cropSize));
 
     const canvas = document.createElement("canvas");
     canvas.width = OUTPUT_SIZE;
@@ -113,10 +161,14 @@ export function AvatarCropDialog({
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, "image/png")
     );
-    if (blob) await onCrop(blob);
+    if (!blob) {
+      setLocalError("ساخت تصویر آواتار ممکن نشد");
+      return;
+    }
+    await onCrop(blob);
   };
 
-  const zoomPct = Math.round((scale / maxScale) * 100);
+  const zoomPct = maxScale > 0 ? Math.round((scale / maxScale) * 100) : 17;
 
   return (
     <Dialog open={!!file && !!img} onOpenChange={(o) => !o && !busy && onCancel()}>
@@ -145,10 +197,9 @@ export function AvatarCropDialog({
                     position: "absolute",
                     left: 0,
                     top: 0,
-                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-                    transformOrigin: "0 0",
-                    width: img.w,
-                    height: img.h,
+                    transform: `translate(${pan.x}px, ${pan.y}px)`,
+                    width: img.w * scale,
+                    height: img.h * scale,
                     maxWidth: "none",
                     maxHeight: "none",
                   }}
@@ -184,6 +235,8 @@ export function AvatarCropDialog({
           />
         </div>
 
+        {(error || localError) && <p className="text-[11px] font-bold text-destructive">{error || localError}</p>}
+
         <DialogFooter className="sm:space-x-0 sm:space-x-reverse sm:justify-between">
           <Button variant="outline" onClick={onCancel} disabled={busy}>
             <X /> انصراف
@@ -192,7 +245,7 @@ export function AvatarCropDialog({
             <Button variant="ghost" size="sm" onClick={setZoomIn} disabled={busy} title="تنظیم خودکار">
               <Scan /> برازش
             </Button>
-            <Button onClick={confirm} disabled={busy || !img}>
+            <Button onClick={confirm} disabled={busy || !img || !(scale > 0) || C < 8}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check />}
               {busy ? "در حال آپلود…" : "تأیید و ذخیره"}
             </Button>

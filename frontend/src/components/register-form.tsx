@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Loader2, UserPlus } from "lucide-react";
 import { useAuth } from "@/lib/auth-store";
-import { http, toUserError } from "@/lib/api";
+import { ApiError, http, toUserError } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,9 +72,11 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
   const [captchaKey, setCaptchaKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [captchaError, setCaptchaError] = useState<string | null>(null);
 
   const goNext = () => {
     setError(null);
+    setCaptchaError(null);
     if (step === 1) {
       const nErr = validateName(name);
       if (nErr) {
@@ -111,6 +113,7 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
 
   const goBack = () => {
     setError(null);
+    setCaptchaError(null);
     setStep((s) => Math.max(1, s - 1));
   };
 
@@ -127,7 +130,7 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
       return;
     }
     if (!challenge) {
-      setError("ابتدا کد امنیتی را بارگذاری کنید");
+      setCaptchaError("ابتدا کد امنیتی را بارگذاری کنید");
       setCaptchaKey((k) => k + 1);
       return;
     }
@@ -152,7 +155,9 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
       router.push("/cap");
     } catch (err) {
       setError(toUserError(err, "ثبت‌نام ناموفق بود"));
-      setCaptchaKey((k) => k + 1);
+      if (!(err instanceof ApiError) || err.status !== 429) {
+        setCaptchaKey((k) => k + 1);
+      }
     } finally {
       setLoading(false);
     }
@@ -304,12 +309,16 @@ export function RegisterForm({ endpoint, submitLabel, description }: RegisterFor
               value={captchaAnswer}
               onChange={setCaptchaAnswer}
               onChallenge={setChallenge}
-              onError={setError}
+              onError={setCaptchaError}
             />
           </>
         )}
 
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {(error || captchaError) && (
+          <p className="text-sm text-destructive" role="alert">
+            {error || captchaError}
+          </p>
+        )}
 
         <div className="flex items-stretch gap-2.5 pt-1">
           {step > 1 && (

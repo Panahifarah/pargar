@@ -11,11 +11,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { http } from "@/lib/api";
 import type { NotificationItem } from "@/lib/types";
 import { useRouter } from "next/navigation";
+import { SafeMarkdown } from "@/components/safe-markdown";
 
 export function NotificationBell() {
   const router = useRouter();
@@ -32,11 +32,15 @@ export function NotificationBell() {
     qc.invalidateQueries({ queryKey: ["me"] });
   };
 
-  const categoryDot: Record<string, string> = {
-    progress: "bg-primary",
-    gamification: "bg-gold",
-    mentor: "bg-accent",
-    event: "bg-secondary",
+  const categoryMeta: Record<string, { label: string; dot: string }> = {
+    progress: { label: "پیشرفت", dot: "bg-primary" },
+    gamification: { label: "بازی‌سازی", dot: "bg-gold" },
+    mentor: { label: "منتور", dot: "bg-accent" },
+    event: { label: "رویداد", dot: "bg-secondary" },
+    urgent: { label: "فوری", dot: "bg-destructive" },
+    curriculum: { label: "درس", dot: "bg-primary" },
+    community: { label: "جامعه", dot: "bg-accent" },
+    system: { label: "سیستم", dot: "bg-muted-foreground" },
   };
 
   return (
@@ -51,67 +55,89 @@ export function NotificationBell() {
           )}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-80 p-0">
-        <div className="flex items-center justify-between rounded-t-md border-b border-border bg-muted/40 px-3 py-2.5">
-          <span className="text-sm font-semibold">اعلان‌ها</span>
-          <div className="flex items-center gap-1">
-            {unread > 0 && <Badge variant="destructive" className="px-2 py-0">{unread} جدید</Badge>}
-            <Button variant="ghost" size="sm" onClick={markAll} className="h-7 gap-1 px-2 text-xs">
-              <CheckCheck className="h-3.5 w-3.5" /> خواندن همه
+      <DropdownMenuContent
+        align="end"
+        side="bottom"
+        collisionPadding={12}
+        className="w-[min(22rem,calc(100vw-1.25rem))] overflow-hidden p-0"
+      >
+        <div dir="rtl" className="text-start">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">اعلان‌ها</p>
+              <p className="text-[11px] text-muted-foreground">
+                {unread > 0 ? `${unread} خوانده‌نشده` : "همه خوانده شده"}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={markAll}
+              disabled={unread === 0}
+              className="h-8 w-8 shrink-0"
+              aria-label="خواندن همه"
+              title="خواندن همه"
+            >
+              <CheckCheck className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-        <div className="max-h-[360px] overflow-y-auto">
-          {isLoading && (
-            <div className="space-y-3 px-3 py-4">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="flex items-start gap-3">
-                  <Skeleton className="mt-1.5 h-2 w-2 rounded-full" />
-                  <div className="flex-1 space-y-1.5">
+          <div className="max-h-[min(22rem,calc(100vh-8rem))] overflow-y-auto">
+            {isLoading && (
+              <div className="space-y-3 px-3 py-4">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="space-y-1.5">
                     <Skeleton className="h-4 w-3/4" />
-                    <Skeleton className="h-3 w-1/2" />
+                    <Skeleton className="h-3 w-full" />
+                    <Skeleton className="h-3 w-1/3" />
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {!isLoading && (!data?.notifications || data.notifications.length === 0) && (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              اعلانی ندارید.
-              <br />
-              <span className="text-xs">با قبولی در یک آزمون یا ثبت‌نام در رویداد، اعلان می‌گیرید.</span>
-            </div>
-          )}
-          {data?.notifications.map((n) => (
-            <button
-              key={n.id}
-              onClick={() => {
-                if (n.route) router.push(n.route);
-              }}
-              className={cn(
-                "flex w-full items-start gap-3 border-b border-border px-3 py-3 text-right transition-colors hover:bg-muted/60",
-                !n.readAt && "bg-primary/5"
-              )}
-            >
-              <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", categoryDot[n.category] ?? "bg-primary")} />
-              <span className="flex-1 space-y-0.5">
-                <span className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">{n.title}</span>
-                  <span className="shrink-0 text-[10px] text-muted-foreground">
-                    {formatDistanceToNow(new Date(n.createdAt), { addSuffix: true, locale: faIR })}
+                ))}
+              </div>
+            )}
+            {!isLoading && (!data?.notifications || data.notifications.length === 0) && (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                اعلانی ندارید.
+                <br />
+                <span className="text-xs">با قبولی در یک آزمون یا ثبت‌نام در رویداد، اعلان می‌گیرید.</span>
+              </div>
+            )}
+            {data?.notifications.map((n) => {
+              const cat = categoryMeta[n.category] ?? { label: "اعلان", dot: "bg-primary" };
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => {
+                    if (n.route) router.push(n.route);
+                  }}
+                  className={cn(
+                    "flex w-full items-start gap-2.5 border-b border-border px-3 py-2.5 text-start transition-colors last:border-b-0 hover:bg-muted/60",
+                    !n.readAt && "bg-primary/[0.06]",
+                  )}
+                >
+                  <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", n.readAt ? "bg-border" : cat.dot)} />
+                  <span className="min-w-0 flex-1">
+                    <span dir="auto" className="block truncate text-sm font-medium [unicode-bidi:plaintext]">
+                      {n.title}
+                    </span>
+                    {n.body && <SafeMarkdown text={n.body} lines={2} className="mt-0.5 text-xs text-muted-foreground" />}
+                    <span className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <span>{cat.label}</span>
+                      <span aria-hidden>·</span>
+                      <span>{formatDistanceToNow(new Date(n.createdAt), { addSuffix: true, locale: faIR })}</span>
+                    </span>
                   </span>
-                </span>
-                {n.body && <span className="block text-xs text-muted-foreground">{n.body}</span>}
-              </span>
-            </button>
-          ))}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push("/notifications")}
+            className="w-full border-t border-border bg-muted/40 py-2.5 text-xs font-semibold text-primary hover:bg-muted"
+          >
+            مشاهده همه اعلان‌ها
+          </button>
         </div>
-        <button
-          onClick={() => router.push("/notifications")}
-          className="w-full rounded-b-md bg-muted/40 py-2.5 text-xs font-semibold text-primary hover:bg-muted"
-        >
-          مشاهده همه اعلان‌ها
-        </button>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"pargar/backend/internal/observability"
+	"pargar/backend/internal/store"
 )
 
 func (s *Server) handleGetSponsors(w http.ResponseWriter, r *http.Request) {
@@ -41,12 +42,66 @@ func (s *Server) loadSponsors(ctx context.Context) []map[string]string {
 	return out
 }
 
+func (s *Server) loadSocials(ctx context.Context) []map[string]string {
+	raw, err := s.store.GetSetting(ctx, "social_links")
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return []map[string]string{}
+	}
+	var list []map[string]string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return []map[string]string{}
+	}
+	out := make([]map[string]string, 0, len(list))
+	for _, item := range list {
+		name := strings.TrimSpace(item["name"])
+		url := strings.TrimSpace(item["url"])
+		if name == "" || url == "" {
+			continue
+		}
+		out = append(out, map[string]string{"name": name, "url": url})
+	}
+	return out
+}
+
+func validateSocialLinks(v string) string {
+	if v == "" {
+		return ""
+	}
+	var tmp []map[string]string
+	if err := json.Unmarshal([]byte(v), &tmp); err != nil {
+		return "فرمت شبکه‌ها نامعتبر است"
+	}
+	if len(tmp) > 8 {
+		return "حداکثر ۸ شبکه مجاز است"
+	}
+	for _, item := range tmp {
+		name := strings.TrimSpace(item["name"])
+		url := strings.TrimSpace(item["url"])
+		if name == "" || url == "" {
+			return "نام و لینک شبکه الزامی است"
+		}
+		if utf8.RuneCountInString(name) > 40 {
+			return "نام شبکه خیلی طولانی است"
+		}
+		if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
+			return "لینک شبکه باید با http شروع شود"
+		}
+		if utf8.RuneCountInString(url) > 500 {
+			return "لینک شبکه خیلی طولانی است"
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keys := []string{
-		"donation_enabled", "donation_note",
 		"physical_cert_enabled", "physical_cert_price_irr", "physical_cert_window_days",
 		"sponsors",
+		"social_links",
+		"hearts_max",
+		"hearts_regen_minutes",
+		"hearts_lock_on_empty",
 		"registration_enabled",
 		"registration_require_whitelist",
 	}
@@ -58,15 +113,17 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 			out[k] = ""
 		}
 	}
-	if strings.TrimSpace(out["donation_note"]) == "" {
-		out["donation_note"] = s.cfg.DonationNote
+	if strings.TrimSpace(out["social_links"]) == "" {
+		out["social_links"] = "[]"
 	}
-	if strings.TrimSpace(out["donation_enabled"]) == "" {
-		if s.cfg.DonationEnabled {
-			out["donation_enabled"] = "true"
-		} else {
-			out["donation_enabled"] = "false"
-		}
+	if strings.TrimSpace(out["hearts_max"]) == "" {
+		out["hearts_max"] = "5"
+	}
+	if strings.TrimSpace(out["hearts_regen_minutes"]) == "" {
+		out["hearts_regen_minutes"] = "240"
+	}
+	if strings.TrimSpace(out["hearts_lock_on_empty"]) == "" {
+		out["hearts_lock_on_empty"] = "false"
 	}
 	if strings.TrimSpace(out["physical_cert_enabled"]) == "" {
 		if s.cfg.PhysicalCertEnabled {
@@ -99,14 +156,16 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	allowed := map[string]bool{
-		"donation_enabled":               true,
-		"donation_note":                  true,
 		"physical_cert_enabled":          true,
 		"physical_cert_price_irr":        true,
 		"physical_cert_window_days":      true,
 		"sponsors":                       true,
 		"registration_enabled":           true,
 		"registration_require_whitelist": true,
+		"social_links":                   true,
+		"hearts_max":                     true,
+		"hearts_regen_minutes":           true,
+		"hearts_lock_on_empty":           true,
 	}
 	for k, v := range req.Settings {
 		if !allowed[k] {
@@ -114,7 +173,7 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		}
 		v = strings.TrimSpace(v)
 		switch k {
-		case "donation_enabled", "physical_cert_enabled", "registration_enabled", "registration_require_whitelist":
+		case "physical_cert_enabled", "registration_enabled", "registration_require_whitelist", "hearts_lock_on_empty":
 			if v == "1" || strings.EqualFold(v, "true") || v == "yes" {
 				v = "true"
 			} else {
@@ -162,9 +221,21 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 			}
-		case "donation_note":
-			if utf8.RuneCountInString(v) > 2000 {
-				writeErr(w, http.StatusBadRequest, "یادداشت دونیت خیلی طولانی است")
+		case "social_links":
+			if msg := validateSocialLinks(v); msg != "" {
+				writeErr(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "hearts_max":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > store.MaxHearts {
+				writeErr(w, http.StatusBadRequest, "سقف قلب باید بین ۱ تا ۵ باشد")
+				return
+			}
+		case "hearts_regen_minutes":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 5 || n > 24*60 {
+				writeErr(w, http.StatusBadRequest, "فاصله بازگشت قلب باید بین ۵ تا ۱۴۴۰ دقیقه باشد")
 				return
 			}
 		}

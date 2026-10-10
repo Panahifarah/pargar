@@ -169,7 +169,111 @@ export async function saveRemoteFile(
   triggerDownload(blob, filename);
 }
 
+function crc32(data: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) {
+    c ^= data[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function uniqueZipName(name: string, used: Map<string, number>): string {
+  const base = (name || "file").split(/[/\\]/).pop() || "file";
+  const clean = base.replace(/[^\w.\-\u0600-\u06FF ]+/g, "_").slice(0, 80) || "file";
+  const n = used.get(clean) ?? 0;
+  used.set(clean, n + 1);
+  if (n === 0) return clean;
+  const dot = clean.lastIndexOf(".");
+  if (dot > 0) return `${clean.slice(0, dot)}-${n + 1}${clean.slice(dot)}`;
+  return `${clean}-${n + 1}`;
+}
+
+/** Uncompressed zip so several chat files save as one download. */
+function buildStoredZip(files: { name: string; data: Uint8Array }[]): Blob {
+  const enc = new TextEncoder();
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const locals: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = enc.encode(file.name);
+    const crc = crc32(file.data);
+    const local = new Uint8Array(30 + name.length);
+    const view = new DataView(local.buffer);
+    view.setUint32(0, 0x04034b50, true);
+    view.setUint16(4, 20, true);
+    view.setUint16(6, 0x800, true);
+    view.setUint16(8, 0, true);
+    view.setUint16(10, dosTime, true);
+    view.setUint16(12, dosDate, true);
+    view.setUint32(14, crc, true);
+    view.setUint32(18, file.data.length, true);
+    view.setUint32(22, file.data.length, true);
+    view.setUint16(26, name.length, true);
+    local.set(name, 30);
+    locals.push(local, file.data);
+    const cen = new Uint8Array(46 + name.length);
+    const cenView = new DataView(cen.buffer);
+    cenView.setUint32(0, 0x02014b50, true);
+    cenView.setUint16(4, 20, true);
+    cenView.setUint16(6, 20, true);
+    cenView.setUint16(8, 0x800, true);
+    cenView.setUint16(10, 0, true);
+    cenView.setUint16(12, dosTime, true);
+    cenView.setUint16(14, dosDate, true);
+    cenView.setUint32(16, crc, true);
+    cenView.setUint32(20, file.data.length, true);
+    cenView.setUint32(24, file.data.length, true);
+    cenView.setUint16(28, name.length, true);
+    cenView.setUint32(42, offset, true);
+    cen.set(name, 46);
+    central.push(cen);
+    offset += local.length + file.data.length;
+  }
+  const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  const parts = [...locals, ...central, end].map((part) => {
+    const copy = new ArrayBuffer(part.byteLength);
+    new Uint8Array(copy).set(part);
+    return copy;
+  });
+  return new Blob(parts, { type: "application/zip" });
+}
+
+/** Save every file in one zip. */
+export async function downloadAllAsZip(
+  items: { url: string; name: string }[],
+  archiveName: string,
+  onProgress?: (ratio: number) => void,
+): Promise<void> {
+  const used = new Map<string, number>();
+  const files: { name: string; data: Uint8Array }[] = [];
+  for (let i = 0; i < items.length; i++) {
+    onProgress?.(i / Math.max(items.length, 1));
+    const hit = await readCachedMedia(items[i].url);
+    const blob = hit ?? (await fetchBlob(items[i].url));
+    if (!hit) await writeCachedMedia(items[i].url, blob);
+    files.push({ name: uniqueZipName(items[i].name, used), data: new Uint8Array(await blob.arrayBuffer()) });
+  }
+  onProgress?.(1);
+  triggerDownload(buildStoredZip(files), archiveName || "files.zip");
+}
+
 /** One network fetch per object. Later views reuse the saved bytes until the object is replaced. */
+export async function clearMediaCache(): Promise<void> {
+  if (typeof caches === "undefined") return;
+  await caches.delete(mediaCacheName);
+}
+
 export async function loadCachedMedia(url: string): Promise<Blob> {
   const hit = await readCachedMedia(url);
   if (hit) return hit;

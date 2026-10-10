@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { cn, formatFaNumber } from "@/lib/utils";
+import { GlobalSearch } from "@/components/global-search";
+import { isVerifiedRole, VerifiedBadge } from "@/components/verified-badge";
 
 const navLinks = [
   { href: "/cap", label: "درخت مهارت" },
@@ -63,6 +65,7 @@ export function Navbar() {
             <BrandMark />
           </Link>
           <div className="flex items-center gap-2">
+            <GlobalSearch />
             <ThemeToggle />
             {pathname !== "/login" && (
               <Button asChild size="sm" className="font-bold">
@@ -173,13 +176,19 @@ export function Navbar() {
                       className="h-11 w-11"
                     />
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-extrabold">{liveUser.name}</p>
+                      <p className="flex min-w-0 items-center gap-1 text-sm font-extrabold">
+                        <span className="truncate">{liveUser.name}</span>
+                        {isVerifiedRole(liveUser.role) && <VerifiedBadge role={liveUser.role} />}
+                      </p>
                       <p className="truncate text-[11px] text-muted-foreground">{liveUser.email}</p>
                       <p className="text-[11px] text-primary">{roleLabel(liveUser.role)}</p>
                     </div>
                   </div>
                   <DropdownMenuItem onClick={() => router.push("/profile")}>
                     <User /> پروفایل من
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => router.push("/settings")}>
+                    <User /> تنظیمات
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setStudioOpen(true)}>
                     <User /> ویرایش آواتار
@@ -200,8 +209,8 @@ export function Navbar() {
                 </DropdownMenuContent>
               </DropdownMenu>
               <Dialog open={studioOpen} onOpenChange={setStudioOpen}>
-                <DialogContent className="max-h-[85vh] max-w-sm gap-3 overflow-y-auto chat-scroll rounded-2xl">
-                  <DialogHeader>
+                <DialogContent className="flex max-h-[min(85vh,40rem)] max-w-sm flex-col gap-3 overflow-hidden rounded-2xl">
+                  <DialogHeader className="shrink-0">
                     <DialogTitle className="text-center">ویرایش آواتار</DialogTitle>
                   </DialogHeader>
                   <AvatarStudio user={liveUser} onClose={() => setStudioOpen(false)} />

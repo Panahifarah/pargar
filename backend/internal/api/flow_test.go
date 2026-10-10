@@ -3,6 +3,7 @@ package api_test
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -189,26 +190,39 @@ func TestQuizFailLocksAccountAndMentorUnlocks(t *testing.T) {
 	token, uid := register(t, e, "Struggle", "struggle@test.dev")
 
 	watchToUnlock(t, e, token, 1)
+	adminEarly := login(t, e, bootstrapAdminEmail)
+	code, _ := e.do(t, "PUT", "/api/admin/users/"+itoa(uid), adminEarly, map[string]any{"hearts": 3})
+	if code != http.StatusOK {
+		t.Fatalf("set hearts: %d", code)
+	}
 
-	// all-wrong answers burn 3 hearts -> account locked
-	code, result := e.do(t, "POST", "/api/lessons/1/quiz/submit", token, map[string]any{"answers": []int{0, 0, 0}})
+	// all-wrong answers spend the starting hearts. Zero does not lock by default.
+	var result map[string]any
+	code, result = e.do(t, "POST", "/api/lessons/1/quiz/submit", token, map[string]any{"answers": []int{0, 0, 0}})
 	if code != http.StatusOK {
 		t.Fatalf("submit: %d", code)
 	}
 	if result["heartsLeft"].(float64) != 0 {
 		t.Fatalf("expected 0 hearts")
 	}
-	if result["locked"] != true {
-		t.Fatalf("expected locked")
+	if result["locked"] == true {
+		t.Fatalf("empty hearts must not lock by default")
 	}
 
-	// locked users can no longer send heartbeats (423)
 	code, _ = e.do(t, "POST", "/api/lessons/1/heartbeat", token, map[string]any{"position": 45, "delta": 1, "seq": 9})
-	if code != http.StatusLocked {
-		t.Fatalf("expected 423 while locked, got %d", code)
+	if code == http.StatusLocked {
+		t.Fatalf("heartbeat should stay open while waiting for a heart")
+	}
+	code, _ = e.do(t, "POST", "/api/lessons/1/quiz/submit", token, map[string]any{"answers": []int{0, 0, 0}})
+	if code != http.StatusForbidden {
+		t.Fatalf("expected quiz blocked at 0 hearts, got %d", code)
 	}
 
-	// locked users may request staff review (does not unlock); only staff unlocks
+	// A manual lock still accepts a review request. Empty hearts alone do not.
+	code, _ = e.do(t, "POST", "/api/admin/users/"+itoa(uid)+"/lock", adminEarly, nil)
+	if code != http.StatusOK {
+		t.Fatalf("manual lock: %d", code)
+	}
 	code, body := e.do(t, "POST", "/api/me/request-unlock", token, map[string]any{"note": "لطفاً بررسی کنید"})
 	if code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("unlock request: %d %v", code, body)
@@ -248,8 +262,8 @@ func TestQuizFailLocksAccountAndMentorUnlocks(t *testing.T) {
 	if code != http.StatusOK || u["isLocked"] != false {
 		t.Fatalf("user should be unlocked: %v", u["isLocked"])
 	}
-	if u["hearts"].(float64) != 3 {
-		t.Fatalf("hearts should be restored to 3, got %v", u["hearts"])
+	if u["hearts"].(float64) != 5 {
+		t.Fatalf("hearts should be restored to 5, got %v", u["hearts"])
 	}
 }
 
@@ -264,12 +278,12 @@ func TestAdminHeartOverflowLocksAndCapsAccount(t *testing.T) {
 	}
 	uid := int64(body["items"].([]any)[0].(map[string]any)["id"].(float64))
 
-	code, body = e.do(t, "PUT", "/api/admin/users/"+itoa(uid), admin, map[string]any{"hearts": 4})
+	code, body = e.do(t, "PUT", "/api/admin/users/"+itoa(uid), admin, map[string]any{"hearts": 9})
 	if code != http.StatusOK {
 		t.Fatalf("update user: %d", code)
 	}
 	user := body["user"].(map[string]any)
-	if user["hearts"].(float64) != 3 || user["isLocked"] != true {
+	if user["hearts"].(float64) != 5 || user["isLocked"] != true {
 		t.Fatalf("overflow must cap hearts and lock account: %v", user)
 	}
 
@@ -278,7 +292,7 @@ func TestAdminHeartOverflowLocksAndCapsAccount(t *testing.T) {
 		t.Fatalf("me: %d", code)
 	}
 	user = body["user"].(map[string]any)
-	if user["hearts"].(float64) != 3 || user["isLocked"] != true {
+	if user["hearts"].(float64) != 5 || user["isLocked"] != true {
 		t.Fatalf("persisted overflow guard failed: %v", user)
 	}
 }
@@ -382,11 +396,13 @@ func TestChatRecipientPermissions(t *testing.T) {
 	}
 	mentorID := int64(body["user"].(map[string]any)["id"].(float64))
 
-	for _, target := range []int64{studentID, otherStudentID} {
-		code, _ = e.do(t, "POST", "/api/chats/"+itoa(target)+"/messages", studentToken, map[string]any{"body": "not allowed"})
-		if code != http.StatusForbidden {
-			t.Fatalf("student→student must be forbidden, got %d", code)
-		}
+	code, _ = e.do(t, "POST", "/api/chats/"+itoa(studentID)+"/messages", studentToken, map[string]any{"body": "saved"})
+	if code != http.StatusCreated {
+		t.Fatalf("saved messages: %d", code)
+	}
+	code, _ = e.do(t, "POST", "/api/chats/"+itoa(otherStudentID)+"/messages", studentToken, map[string]any{"body": "not allowed"})
+	if code != http.StatusForbidden {
+		t.Fatalf("student→student must be forbidden, got %d", code)
 	}
 	code, _ = e.do(t, "POST", "/api/chats/"+itoa(mentorID)+"/messages", studentToken, map[string]any{"body": "ok"})
 	if code != http.StatusCreated {
@@ -566,17 +582,16 @@ func TestAdminSettingsAndSponsors(t *testing.T) {
 
 	code, body := e.do(t, "PUT", "/api/admin/settings", admin, map[string]any{
 		"settings": map[string]any{
-			"donation_enabled": "true",
-			"donation_note":    "یادداشت تست",
-			"sponsors":         `[{"name":"حامی یک","url":"https://example.com","blurb":"حمایت"}]`,
+			"social_links": `[{"name":"تلگرام","url":"https://t.me/pargar"}]`,
+			"sponsors":     `[{"name":"حامی یک","url":"https://example.com","blurb":"حمایت"}]`,
 		},
 	})
 	if code != http.StatusOK {
 		t.Fatalf("put settings: %d %v", code, body)
 	}
 	settings := body["settings"].(map[string]any)
-	if settings["donation_note"] != "یادداشت تست" {
-		t.Fatalf("donation note not saved: %v", settings["donation_note"])
+	if !strings.Contains(settings["social_links"].(string), "تلگرام") {
+		t.Fatalf("social links not saved: %v", settings["social_links"])
 	}
 
 	code, body = e.do(t, "GET", "/api/sponsors", "", nil)
@@ -595,8 +610,8 @@ func TestAdminSettingsAndSponsors(t *testing.T) {
 	if _, ok := body["channel"]; ok {
 		t.Fatalf("community must not expose telegram channel: %v", body["channel"])
 	}
-	donation := body["donation"].(map[string]any)
-	if donation["note"] != "یادداشت تست" {
-		t.Fatalf("community donation note: %v", donation["note"])
+	socials, _ := body["socials"].([]any)
+	if len(socials) != 1 || socials[0].(map[string]any)["name"] != "تلگرام" {
+		t.Fatalf("community socials: %v", body["socials"])
 	}
 }

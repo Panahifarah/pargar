@@ -1,10 +1,10 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Loader2, Package } from "lucide-react";
 import { CertificateCard } from "@/components/certificate-card";
+import { NotFoundState, notFoundSentence } from "@/components/not-found-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { http, toUserError } from "@/lib/api";
@@ -96,12 +96,16 @@ export default function CertificatePage() {
 
   if (error || !data?.certificate) {
     return (
-      <div className="mx-auto max-w-lg px-4 py-16 text-center">
-        <p className="text-lg font-bold">گواهینامه پیدا نشد</p>
-        <Button asChild className="mt-4" variant="outline">
-          <Link href="/">بازگشت</Link>
-        </Button>
-      </div>
+      <NotFoundState
+        title="گواهینامه پیدا نشد"
+        description={notFoundSentence(
+          error ? toUserError(error, "") : "",
+          "این گواهینامه در سامانه نیست.",
+          "گواهینامه پیدا نشد",
+        )}
+        href="/"
+        actionLabel="بازگشت به خانه"
+      />
     );
   }
 

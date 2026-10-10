@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { HeartHandshake, Loader2, Package, Save, Settings2, Sparkles } from "lucide-react";
+import { Heart, Loader2, Package, Save, Settings2, Share2, Sparkles } from "lucide-react";
 import { http, toUserError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,7 @@ import type { AdminTabId } from "@/components/admin/nav";
 type SettingsMap = Record<string, string>;
 
 type SponsorDraft = { name: string; url: string; blurb: string };
+type SocialDraft = { name: string; url: string };
 
 function SectionHeading({
   icon: Icon,
@@ -44,6 +45,7 @@ export function SiteSettingsPanel({
   const qc = useQueryClient();
   const [draft, setDraft] = useState<SettingsMap>({});
   const [sponsors, setSponsors] = useState<SponsorDraft[]>([]);
+  const [socials, setSocials] = useState<SocialDraft[]>([]);
   const [busy, setBusy] = useState(false);
 
   const { data, isLoading } = useQuery({
@@ -68,15 +70,17 @@ export function SiteSettingsPanel({
     } catch {
       setSponsors([]);
     }
+    try {
+      const parsed = JSON.parse(data.settings.social_links || "[]") as SocialDraft[];
+      setSocials(Array.isArray(parsed) ? parsed.map((s) => ({ name: s.name ?? "", url: s.url ?? "" })) : []);
+    } catch {
+      setSocials([]);
+    }
   }, [data]);
 
   const set = (key: string, value: string) => setDraft((d) => ({ ...d, [key]: value }));
 
   const save = async () => {
-    if ((draft.donation_note ?? "").trim().length > 2000) {
-      toast.error("یادداشت دونیت خیلی طولانی است");
-      return;
-    }
     const price = Number(draft.physical_cert_price_irr);
     const days = Number(draft.physical_cert_window_days);
     if (!Number.isFinite(price) || price < 0) {
@@ -110,6 +114,9 @@ export function SiteSettingsPanel({
     try {
       const settings = {
         ...draft,
+        social_links: JSON.stringify(
+          socials.filter((s) => s.name.trim() && s.url.trim()).map((s) => ({ name: s.name.trim(), url: s.url.trim() })),
+        ),
         sponsors: JSON.stringify(
           sponsors
             .filter((s) => s.name.trim())
@@ -173,24 +180,60 @@ export function SiteSettingsPanel({
 
           <section className="space-y-3">
             <SectionHeading
-              icon={HeartHandshake}
-              title="حمایت / دونیت"
-              hint="متن راهنما برای گفتگو با تیم دربارهٔ حمایت مالی"
+              icon={Share2}
+              title="شبکه‌های پرگار"
+              hint="حداکثر ۸ لینک رسمی. در فوتر و زبانه شبکه‌ها دیده می‌شود."
             />
+            {socials.map((s, i) => (
+              <div key={i} className="grid gap-2 sm:grid-cols-2">
+                <Input
+                  value={s.name}
+                  placeholder="نام"
+                  onChange={(e) =>
+                    setSocials((list) => list.map((row, idx) => (idx === i ? { ...row, name: e.target.value } : row)))
+                  }
+                />
+                <Input
+                  dir="ltr"
+                  value={s.url}
+                  placeholder="https://"
+                  onChange={(e) =>
+                    setSocials((list) => list.map((row, idx) => (idx === i ? { ...row, url: e.target.value } : row)))
+                  }
+                />
+              </div>
+            ))}
+            {socials.length < 8 && (
+              <Button type="button" size="sm" variant="outline" onClick={() => setSocials((list) => [...list, { name: "", url: "" }])}>
+                افزودن شبکه
+              </Button>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <SectionHeading icon={Heart} title="قلب‌ها" hint="سقف، فاصله بازگشت، و قفل در صفر." />
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Input
+                type="number"
+                value={draft.hearts_max ?? "5"}
+                onChange={(e) => set("hearts_max", e.target.value)}
+                aria-label="سقف قلب"
+              />
+              <Input
+                type="number"
+                value={draft.hearts_regen_minutes ?? "240"}
+                onChange={(e) => set("hearts_regen_minutes", e.target.value)}
+                aria-label="فاصله بازگشت به دقیقه"
+              />
+            </div>
             <label className="flex items-center justify-between gap-3 text-sm">
-              <span>فعال باشد</span>
+              <span>صفر قلب حساب را قفل کند</span>
               <Switch
-                checked={(draft.donation_enabled ?? "true") === "true"}
-                onCheckedChange={(v) => set("donation_enabled", v ? "true" : "false")}
-                aria-label="حمایت مالی"
+                checked={(draft.hearts_lock_on_empty ?? "false") === "true"}
+                onCheckedChange={(v) => set("hearts_lock_on_empty", v ? "true" : "false")}
+                aria-label="قفل در صفر"
               />
             </label>
-            <Textarea
-              className="min-h-[96px]"
-              value={draft.donation_note ?? ""}
-              onChange={(e) => set("donation_note", e.target.value)}
-              placeholder="متن راهنما برای دانشجو"
-            />
           </section>
 
           <section className="space-y-3">

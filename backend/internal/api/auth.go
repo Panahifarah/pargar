@@ -175,6 +175,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "حساب غیرفعال است")
 		return
 	}
+	user = s.settleAccount(r.Context(), user)
+	if user.IsClosed {
+		observability.Logins.WithLabelValues("closed").Inc()
+		writeErr(w, http.StatusForbidden, msgAccountClosedLogin)
+		return
+	}
 	refreshTTL := s.auth.refreshTTL(req.RememberMe)
 	access, refresh, err := s.auth.IssueForUserTTL(r.Context(), user, refreshTTL)
 	if err != nil {
@@ -222,6 +228,12 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "حساب غیرفعال است")
 		return
 	}
+	user = s.settleAccount(r.Context(), user)
+	if user.IsClosed {
+		s.clearSessionCookies(w)
+		writeErr(w, http.StatusForbidden, msgAccountClosedLogin)
+		return
+	}
 	// Preserve remember-me vs short session when rotating the refresh token.
 	ttl := s.cfg.RefreshTokenTTLSession
 	if lifetime >= 48*time.Hour {
@@ -266,6 +278,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		user = hearts
 	}
+	user = s.settleAccount(r.Context(), user)
 	s.signUserMedia(user)
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Award, CalendarDays, HeartHandshake, MessageSquareHeart, Sparkles } from "lucide-react";
+import { Award, CalendarDays, MessageSquareHeart, Share2, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/page-header";
@@ -17,7 +18,9 @@ import { Badge } from "@/components/ui/badge";
 import type { Mentor } from "@/lib/types";
 import { http } from "@/lib/api";
 import type { ChatMessage, Conversation } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, formatJalaliStamp } from "@/lib/utils";
+import { useAuth } from "@/lib/auth-store";
+import { isVerifiedRole, VerifiedBadge } from "@/components/verified-badge";
 
 type Tab = "events" | "chats" | "leagues" | "community";
 
@@ -69,7 +72,7 @@ function HubTabs() {
             جامعه، <span className="text-gradient-brand">استمرار و منتورها</span>
           </>
         }
-        description="رویدادهای زنده برای تقویت مهارت، لیگ‌های هفتگی برای ثبات، گفتگو با منتور، و هماهنگی حمایت مالی."
+        description="رویدادهای زنده برای تقویت مهارت، لیگ‌های هفتگی برای ثبات، گفتگو، و شبکه‌های پرگار."
         className="mb-0"
       />
 
@@ -88,26 +91,11 @@ function HubTabs() {
             <span className="truncate">لیگ‌ها</span>
           </TabsTrigger>
           <TabsTrigger value="community" className="h-10 gap-1.5 px-2 sm:px-3">
-            <HeartHandshake className="h-4 w-4 shrink-0" />
-            <span className="truncate">حمایت</span>
+            <Share2 className="h-4 w-4 shrink-0" />
+            <span className="truncate">شبکه‌ها</span>
           </TabsTrigger>
         </TabsList>
         <TabsContent value="events" className="mt-0 space-y-4">
-          <button
-            type="button"
-            onClick={() => onTab("community")}
-            className="flex w-full items-center gap-3 rounded-2xl border-2 border-accent/30 bg-accent/5 px-4 py-3.5 text-start transition hover:bg-accent/10"
-          >
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent/15 text-accent">
-              <HeartHandshake className="h-5 w-5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-extrabold">حمایت مالی</span>
-              <span className="mt-0.5 block text-xs text-muted-foreground">
-                هماهنگی دونیت از طریق گفتگو با تیم
-              </span>
-            </span>
-          </button>
           <EventsPanel />
         </TabsContent>
         <TabsContent value="chats" className="mt-0">
@@ -128,17 +116,40 @@ function openChat(withId?: number) {
   window.dispatchEvent(new CustomEvent("pargar:chat", { detail: { open: true, with: withId } }));
 }
 
+function roleWord(role?: string) {
+  if (role === "admin") return "مدیر";
+  if (role === "mentor") return "منتور";
+  if (role === "student") return "هنرجو";
+  return "کاربر";
+}
+
 function ChatsLauncher() {
+  const me = useAuth((s) => s.user);
+  const staff = me?.role === "admin" || me?.role === "mentor";
+  const [peoplePage, setPeoplePage] = useState(1);
+  const [alpha, setAlpha] = useState(false);
+  const [convPage, setConvPage] = useState(1);
   const { data, isLoading } = useQuery({
-    queryKey: ["mentors"],
-    queryFn: () => http.get<{ mentors: Mentor[] }>("/api/mentors"),
+    queryKey: ["mentors", peoplePage],
+    queryFn: () => http.get<{ mentors: Mentor[]; total: number; pageSize: number }>(`/api/mentors?page=${peoplePage}&pageSize=20`),
   });
   const { data: convData, isLoading: convLoading } = useQuery({
-    queryKey: ["conversations"],
-    queryFn: () => http.get<{ conversations: Conversation[] }>("/api/chats/conversations"),
+    queryKey: ["conversations", convPage],
+    queryFn: () =>
+      http.get<{ conversations: Conversation[]; total: number; pageSize: number }>(
+        `/api/chats/conversations?page=${convPage}&pageSize=10`,
+      ),
   });
   const mentors = data?.mentors ?? [];
+  const people = useMemo(() => {
+    const list = [...mentors];
+    if (alpha) list.sort((a, b) => a.name.localeCompare(b.name, "fa"));
+    else list.sort((a, b) => Number(!!b.online) - Number(!!a.online) || a.name.localeCompare(b.name, "fa"));
+    return list;
+  }, [mentors, alpha]);
   const conversations = convData?.conversations ?? [];
+  const peopleTotal = data?.total ?? mentors.length;
+  const convTotal = convData?.total ?? conversations.length;
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -156,7 +167,7 @@ function ChatsLauncher() {
         </div>
       </Panel>
 
-      <Panel title="گفتگوهای شما" description="مکالمات جاری با منتورها — روی هر کدام بزنید تا باز شود.">
+      <Panel title="گفتگوهای شما" description="مکالمات جاری — روی هر کدام بزنید تا باز شود.">
         <div className="space-y-1.5 pt-1">
           {convLoading && (
             <div className="space-y-2">
@@ -183,9 +194,12 @@ function ChatsLauncher() {
               <UserAvatar name={c.partner.name} className="h-10 w-10" {...avatarPropsOf(c.partner)} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="truncate font-bold">{c.partner.name}</p>
+                  <p className="flex min-w-0 items-center gap-1 font-bold">
+                    <span className="truncate">{c.partner.name}</span>
+                    {isVerifiedRole(c.partner.role) && <VerifiedBadge role={c.partner.role} />}
+                  </p>
                   {c.lastMessage && (
-                    <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo(c.lastMessage.createdAt)}</span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">{formatJalaliStamp(c.lastMessage.createdAt)}</span>
                   )}
                 </div>
                 <p
@@ -207,13 +221,38 @@ function ChatsLauncher() {
           ))}
           {!convLoading && conversations.length === 0 && (
             <p className="px-1 text-sm text-muted-foreground">
-              هنوز گفتگویی ندارید — از «شروع سریع» یک منتور انتخاب کنید.
+              هنوز گفتگویی ندارید — از فهرست کنار، یک نفر را انتخاب کنید.
             </p>
+          )}
+          {convTotal > (convData?.pageSize ?? 10) && (
+            <div className="flex items-center justify-between pt-2 text-xs">
+              <Button type="button" size="sm" variant="outline" disabled={convPage <= 1} onClick={() => setConvPage((p) => p - 1)}>
+                قبلی
+              </Button>
+              <span className="text-muted-foreground">{convPage}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={convPage * (convData?.pageSize ?? 10) >= convTotal}
+                onClick={() => setConvPage((p) => p + 1)}
+              >
+                بعدی
+              </Button>
+            </div>
           )}
         </div>
       </Panel>
 
-      <Panel title="شروع سریع با منتور" description="یک گفتگو را مستقیم باز کنید.">
+      <Panel
+        title={staff ? "شروع گفتگو" : "شروع سریع با منتور"}
+        description="نقش هر نفر روی ردیف نوشته شده است."
+        actions={
+          <Button type="button" size="sm" variant="outline" onClick={() => setAlpha((v) => !v)}>
+            {alpha ? "آنلاین بالا" : "الفبایی"}
+          </Button>
+        }
+      >
         <div className="space-y-1 pt-1">
           {isLoading && (
             <div className="space-y-2">
@@ -229,24 +268,46 @@ function ChatsLauncher() {
               ))}
             </div>
           )}
-          {mentors.map((m) => (
-            <button
+          {people.map((m) => (
+            <motion.button
+              layout
               key={m.id}
               onClick={() => openChat(m.id)}
               className="flex w-full items-center gap-3 rounded-xl border-2 border-border/70 px-3 py-2.5 text-right transition-colors hover:border-primary/50 hover:bg-primary/5"
             >
               <UserAvatar name={m.name} className="h-10 w-10" {...avatarPropsOf(m)} />
               <div className="min-w-0 flex-1">
-                <p className="truncate font-bold">{m.name}</p>
-                <p className="text-xs text-muted-foreground">منتور</p>
+                <p className="flex min-w-0 items-center gap-1 font-bold">
+                  <span className="truncate">{m.name}</span>
+                  {isVerifiedRole(m.role) && <VerifiedBadge role={m.role} />}
+                </p>
+                <p className="text-xs text-muted-foreground">{roleWord(m.role)}</p>
               </div>
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-success">
-                <span className="h-1.5 w-1.5 rounded-full bg-success" /> در دسترس
+              <span className={cn("inline-flex items-center gap-1.5 text-xs font-bold", m.online ? "text-success" : "text-muted-foreground")}>
+                <span className={cn("h-1.5 w-1.5 rounded-full", m.online ? "bg-success" : "bg-muted-foreground/40")} />
+                {m.online ? "آنلاین" : "آفلاین"}
               </span>
-            </button>
+            </motion.button>
           ))}
           {!isLoading && mentors.length === 0 && (
-            <p className="text-sm text-muted-foreground">هنوز منتوری در دسترس نیست.</p>
+            <p className="text-sm text-muted-foreground">{staff ? "کسی برای گفتگو نیست." : "هنوز منتوری در دسترس نیست."}</p>
+          )}
+          {peopleTotal > (data?.pageSize ?? 20) && (
+            <div className="flex items-center justify-between pt-2 text-xs">
+              <Button type="button" size="sm" variant="outline" disabled={peoplePage <= 1} onClick={() => setPeoplePage((p) => p - 1)}>
+                قبلی
+              </Button>
+              <span className="text-muted-foreground">{peoplePage}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={peoplePage * (data?.pageSize ?? 20) >= peopleTotal}
+                onClick={() => setPeoplePage((p) => p + 1)}
+              >
+                بعدی
+              </Button>
+            </div>
           )}
         </div>
       </Panel>
@@ -256,19 +317,13 @@ function ChatsLauncher() {
 
 function messagePreview(m: ChatMessage) {
   if (m.body) return m.body;
-  if (m.attachment) {
+  const atts = m.attachments?.length ? m.attachments : m.attachment ? [m.attachment] : [];
+  if (atts.length > 1 && atts.every((a) => a.type === "image")) return `📷 ${atts.length.toLocaleString("fa-IR")} عکس`;
+  if (atts.length > 1 && atts.every((a) => a.type === "file")) return `📎 ${atts.length.toLocaleString("fa-IR")} فایل`;
+  if (atts.length > 1) return `📎 ${atts.length.toLocaleString("fa-IR")} پیوست`;
+  if (atts[0]) {
     const labels: Record<string, string> = { image: "📷 عکس", video: "🎬 ویدیو", audio: "🎵 پیام صوتی" };
-    return labels[m.attachment.type] ?? `📎 ${m.attachment.name}`;
+    return labels[atts[0].type] ?? `📎 ${atts[0].name}`;
   }
   return "";
-}
-
-function timeAgo(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(diff / 60_000);
-  if (m < 1) return "الان";
-  if (m < 60) return `${m} دقیقه قبل`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} ساعت قبل`;
-  return new Date(iso).toLocaleDateString("fa-IR");
 }

@@ -6,7 +6,7 @@ import { useAuth } from "@/lib/auth-store";
 import { queryClient } from "@/lib/query-client";
 import { apiForm, http, toUserError } from "@/lib/api";
 import type { User } from "@/lib/types";
-import { AVATAR_COLORS, AVATAR_VARIANTS, UserAvatar, avatarPaletteOf } from "@/components/ui/user-avatar";
+import { AVATAR_PALETTES, AVATAR_VARIANTS, UserAvatar, avatarPaletteOf } from "@/components/ui/user-avatar";
 import { AvatarCropDialog } from "@/components/avatar-crop";
 import {
   Dialog,
@@ -17,15 +17,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-
-const PALETTES: { label: string; colors: string[] }[] = [
-  { label: "پیش‌فرض", colors: AVATAR_COLORS },
-  { label: "رزین", colors: ["#0f172a", "#38bdf8", "#f0abfc", "#a5f3fc", "#7c3aed", "#f5d0fe"] },
-  { label: "صحرایی", colors: ["#1c1917", "#fbbf24", "#fb923c", "#fde68a", "#f97316", "#fed7aa"] },
-  { label: "اسکاندی", colors: ["#022c22", "#34d399", "#fef3c7", "#a7f3d0", "#166534", "#d1fae5"] },
-  { label: "نئون", colors: ["#18181b", "#a3e635", "#22d3ee", "#f97316", "#e879f9", "#fb7185"] },
-  { label: "سلطنتی", colors: ["#20123a", "#9370db", "#e6e6fa", "#6b21a8", "#c084fc", "#f3e8ff"] },
-];
 
 export function AvatarStudio({ user, onClose }: { user: User; onClose: () => void }) {
   const setUser = useAuth((s) => s.setUser);
@@ -54,13 +45,18 @@ export function AvatarStudio({ user, onClose }: { user: User; onClose: () => voi
     void queryClient.invalidateQueries({ queryKey: ["leaderboard"] });
   };
 
+  const publish = (fresh: User) => {
+    queryClient.setQueryData<{ user: User }>(["me"], { user: fresh });
+    setUser(fresh);
+    invalidate();
+  };
+
   const doSave = async (body: { avatarVariant?: string; avatarPalette?: string; avatarPhoto?: string }) => {
     setBusy(true);
     setError(null);
     try {
       const { user: fresh } = await http.put<{ user: User }>("/api/me/avatar", body);
-      setUser(fresh);
-      invalidate();
+      publish(fresh);
     } catch (e) {
       setError(toUserError(e, "خطا در ذخیره"));
     } finally {
@@ -95,8 +91,7 @@ export function AvatarStudio({ user, onClose }: { user: User; onClose: () => voi
       form.append("file", new File([blob], "avatar.png", { type: "image/png" }), "avatar.png");
       const { url } = await apiForm<{ url: string }>("/api/me/avatar-photo", form);
       const { user: fresh } = await http.put<{ user: User }>("/api/me/avatar", { avatarPhoto: url });
-      setUser(fresh);
-      invalidate();
+      publish(fresh);
       setPending(null);
     } catch (e) {
       setError(toUserError(e, "خطا در آپلود"));
@@ -106,7 +101,8 @@ export function AvatarStudio({ user, onClose }: { user: User; onClose: () => voi
   };
 
   return (
-    <div className="space-y-4">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pe-1">
       <div className="flex items-center gap-4">
         <div className="relative shrink-0">
           <UserAvatar
@@ -162,7 +158,7 @@ export function AvatarStudio({ user, onClose }: { user: User; onClose: () => voi
       <div>
         <p className="mb-1.5 text-[11px] font-bold text-muted-foreground">رنگ‌ها</p>
         <div className="space-y-1">
-          {PALETTES.map((p) => {
+          {AVATAR_PALETTES.map((p) => {
             const active = JSON.stringify(p.colors) === draftP;
             return (
               <button
@@ -224,8 +220,9 @@ export function AvatarStudio({ user, onClose }: { user: User; onClose: () => voi
       </div>
 
       {error && <p className="text-[11px] font-bold text-destructive">{error}</p>}
+      </div>
 
-      <div className="sticky -bottom-3 z-10 -mx-2.5 flex items-center justify-between gap-2 bg-popover px-2.5 pb-1 pt-2">
+      <div className="mt-3 flex shrink-0 items-center justify-between gap-2 border-t border-border bg-popover pt-3">
         <div className="flex items-center gap-2">
           {dirty && (
             <Button variant="ghost" size="sm" onClick={reset} disabled={busy}>
@@ -250,7 +247,16 @@ export function AvatarStudio({ user, onClose }: { user: User; onClose: () => voi
       <AvatarCropDialog
         file={pending}
         busy={busy}
-        onCancel={() => !busy && setPending(null)}
+        error={error}
+        onCancel={() => {
+          if (busy) return;
+          setPending(null);
+          setError(null);
+        }}
+        onInvalid={() => {
+          setPending(null);
+          setError("خواندن این عکس ممکن نشد. JPEG، PNG یا WebP را انتخاب کنید.");
+        }}
         onCrop={(blob) => onUpload(blob)}
       />
 

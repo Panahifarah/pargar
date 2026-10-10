@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -31,6 +33,11 @@ type Server struct {
 
 func NewServer(cfg *config.Config, st *store.Store, rdb *redis.Client, stg storage.Storage) *Server {
 	hub := NewHub(rdb)
+	hub.SetSeen(func(userID int64) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = st.TouchLastSeen(ctx, userID)
+	})
 	notifier := service.NewNotifier(st, hub)
 	trustedProxyConfig = cfg
 	return &Server{

@@ -15,7 +15,8 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react";
-import { api, http, toUserError } from "@/lib/api";
+import { NotFoundState, notFoundSentence } from "@/components/not-found-state";
+import { ApiError, api, http, toUserError } from "@/lib/api";
 import type { QuizData, QuizResult } from "@/lib/types";
 import { HeartsMeter } from "@/components/hearts-meter";
 import { useLiveUser } from "@/hooks/use-live-user";
@@ -36,9 +37,11 @@ export function QuizExperience({ lessonId }: { lessonId: number }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const idOk = Number.isFinite(lessonId) && lessonId > 0;
   const { data, isLoading, isError, error: loadError } = useQuery({
     queryKey: ["quiz", lessonId],
     queryFn: () => http.get<QuizData>(`/api/lessons/${lessonId}/quiz`),
+    enabled: idOk,
     retry: false,
     meta: { silentError: true },
   });
@@ -72,6 +75,21 @@ export function QuizExperience({ lessonId }: { lessonId: number }) {
       setSubmitting(false);
     }
   };
+
+  if (!idOk || (loadError instanceof ApiError && loadError.status === 404)) {
+    return (
+      <NotFoundState
+        title="آزمون پیدا نشد"
+        description={notFoundSentence(
+          loadError ? toUserError(loadError, "") : "",
+          "این آزمون در سامانه نیست.",
+          "آزمون پیدا نشد",
+        )}
+        href="/cap"
+        actionLabel="بازگشت به درخت مهارت"
+      />
+    );
+  }
 
   if (isLoading) {
     return (

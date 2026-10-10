@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-store";
 import { getWsUrl } from "@/lib/api";
@@ -24,6 +25,7 @@ export function useRealtimeGateway() {
   const accessToken = useAuth((s) => s.accessToken);
   const user = useAuth((s) => s.user);
   const client = useQueryClient();
+  const router = useRouter();
   const lastEvent = useRef<Record<string, number>>({});
 
   useEffect(() => {
@@ -55,7 +57,31 @@ export function useRealtimeGateway() {
             if (stamp - (lastEvent.current[dedupeKey] ?? 0) < 2000) return;
             lastEvent.current[dedupeKey] = stamp;
 
-            toast.info(`${n.title}${n.body ? ` — ${n.body}` : ""}`, { duration: 5000 });
+            const title = n.title?.trim() || "اعلان";
+            const body = n.body?.trim();
+            toast.custom(
+              (id) => (
+                <button
+                  type="button"
+                  dir="rtl"
+                  onClick={() => {
+                    toast.dismiss(id);
+                    if (n.route) router.push(n.route);
+                  }}
+                  className="w-[min(22rem,calc(100vw-1.5rem))] rounded-xl border border-primary/40 bg-gradient-to-br from-primary/25 via-primary/12 to-accent/20 px-3 py-2.5 text-start shadow-[0_16px_40px_-16px_color-mix(in_srgb,var(--color-primary)_75%,transparent)] backdrop-blur-md"
+                >
+                  <span dir="auto" className="block truncate text-sm font-semibold text-foreground [unicode-bidi:plaintext]">
+                    {title}
+                  </span>
+                  {body ? (
+                    <span dir="auto" className="mt-0.5 block line-clamp-2 text-xs text-foreground/75 [unicode-bidi:plaintext]">
+                      {body}
+                    </span>
+                  ) : null}
+                </button>
+              ),
+              { duration: 5000 },
+            );
             client.invalidateQueries({ queryKey: ["notifications"] });
             client.invalidateQueries({ queryKey: ["me"] });
           }
@@ -76,7 +102,7 @@ export function useRealtimeGateway() {
       closed = true;
       ws?.close();
     };
-  }, [accessToken, user, client]);
+  }, [accessToken, user, client, router]);
 
   return null;
 }

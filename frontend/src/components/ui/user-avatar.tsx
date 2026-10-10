@@ -19,6 +19,16 @@ export const AVATAR_VARIANTS: { name: AvatarVariantName; label: string }[] = [
   { name: "bauhaus", label: "باهاوس" },
 ];
 
+/** Same palettes the avatar studio offers, reused for the wide profile banner. */
+export const AVATAR_PALETTES: { label: string; colors: string[] }[] = [
+  { label: "پیش‌فرض", colors: AVATAR_COLORS },
+  { label: "رزین", colors: ["#0f172a", "#38bdf8", "#f0abfc", "#a5f3fc", "#7c3aed", "#f5d0fe"] },
+  { label: "صحرایی", colors: ["#1c1917", "#fbbf24", "#fb923c", "#fde68a", "#f97316", "#fed7aa"] },
+  { label: "اسکاندی", colors: ["#022c22", "#34d399", "#fef3c7", "#a7f3d0", "#166534", "#d1fae5"] },
+  { label: "نئون", colors: ["#18181b", "#a3e635", "#22d3ee", "#f97316", "#e879f9", "#fb7185"] },
+  { label: "سلطنتی", colors: ["#20123a", "#9370db", "#e6e6fa", "#6b21a8", "#c084fc", "#f3e8ff"] },
+];
+
 export function avatarPaletteOf(raw?: string): string[] {
   if (!raw || !raw.startsWith("[")) return AVATAR_COLORS;
   try {

@@ -45,6 +45,7 @@ export function AdminProfileManage({ userId }: { userId: number }) {
 
   const account = accountQ.data?.user;
   const isSelf = account?.id === me?.id;
+  const canDelete = !!account && !isSelf && (account.isFrozen || account.isClosed);
 
   const act = async (kind: "lock" | "unlock") => {
     setBusy("lock");
@@ -89,7 +90,7 @@ export function AdminProfileManage({ userId }: { userId: number }) {
     }
     if (
       !(await confirm(
-        "حذف کاربر",
+        "حذف دائمی",
         `حساب «${account.name}» (${account.email}) برای همیشه حذف شود؟ این عمل بازگشت‌ناپذیر است.`,
       ))
     ) {
@@ -156,17 +157,17 @@ export function AdminProfileManage({ userId }: { userId: number }) {
                     قفل
                   </Button>
                 ))}
-              <div className={cn("grid gap-2", isSelf ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+              <div className={cn("grid gap-2", canDelete ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
                 <Button size="sm" variant="outline" className="w-full" onClick={() => setEditing(account)}>
                   <Pencil className="h-3.5 w-3.5" /> ویرایش
                 </Button>
                 <Button size="sm" variant="outline" className="w-full" disabled={busy !== null} onClick={() => setResetOpen(true)}>
                   <KeyRound className="h-3.5 w-3.5" /> ریست رمز
                 </Button>
-                {!isSelf && (
+                {canDelete && (
                   <Button size="sm" variant="destructive" className="w-full" disabled={busy !== null} onClick={del}>
                     {busy === "delete" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                    حذف
+                    حذف دائمی
                   </Button>
                 )}
               </div>

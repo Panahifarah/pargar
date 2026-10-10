@@ -21,32 +21,87 @@ func (r Role) IsStaff() bool {
 }
 
 type User struct {
-	ID                 int64      `json:"id"`
-	Email              string     `json:"email"`
-	Username           string     `json:"username"`
-	PasswordHash       string     `json:"-"`
-	Name               string     `json:"name"`
-	Role               Role       `json:"role"`
-	XP                 int        `json:"xp"`
-	Hearts             int        `json:"hearts"`
-	HeartsUpdatedAt    time.Time  `json:"heartsUpdatedAt"`
-	StreakCurrent      int        `json:"streakCurrent"`
-	StreakLongest      int        `json:"streakLongest"`
-	LastActivityDate   *time.Time `json:"lastActivityDate,omitempty"`
-	IsLocked           bool       `json:"isLocked"`
-	LockedAt           *time.Time `json:"lockedAt,omitempty"`
-	UnlockedBy         *int64     `json:"unlockedBy,omitempty"`
-	IsActive           bool       `json:"isActive"`
-	AvatarVariant      string     `json:"avatarVariant"`
-	AvatarPalette      string     `json:"avatarPalette"`
-	AvatarPhoto        string     `json:"avatarPhoto,omitempty"`
-	Phone              string     `json:"phone"`
-	TelegramID         *int64     `json:"-"`
-	TelegramUsername   string     `json:"-"`
-	SecurityQuestion   string     `json:"securityQuestion,omitempty"`
-	SecurityAnswerHash string     `json:"-"`
-	HasSecurityAnswer  bool       `json:"hasSecurityAnswer"`
-	CreatedAt          time.Time  `json:"createdAt"`
+	ID                       int64      `json:"id"`
+	Email                    string     `json:"email"`
+	Username                 string     `json:"username"`
+	PasswordHash             string     `json:"-"`
+	Name                     string     `json:"name"`
+	Role                     Role       `json:"role"`
+	XP                       int        `json:"xp"`
+	Hearts                   int        `json:"hearts"`
+	HeartsUpdatedAt          time.Time  `json:"heartsUpdatedAt"`
+	StreakCurrent            int        `json:"streakCurrent"`
+	StreakLongest            int        `json:"streakLongest"`
+	LastActivityDate         *time.Time `json:"lastActivityDate,omitempty"`
+	IsLocked                 bool       `json:"isLocked"`
+	LockedAt                 *time.Time `json:"lockedAt,omitempty"`
+	UnlockedBy               *int64     `json:"unlockedBy,omitempty"`
+	IsActive                 bool       `json:"isActive"`
+	AvatarVariant            string     `json:"avatarVariant"`
+	AvatarPalette            string     `json:"avatarPalette"`
+	AvatarPhoto              string     `json:"avatarPhoto,omitempty"`
+	Phone                    string     `json:"phone"`
+	TelegramID               *int64     `json:"-"`
+	TelegramUsername         string     `json:"-"`
+	SecurityQuestion         string     `json:"securityQuestion,omitempty"`
+	SecurityAnswerHash       string     `json:"-"`
+	HasSecurityAnswer        bool       `json:"hasSecurityAnswer"`
+	CreatedAt                time.Time  `json:"createdAt"`
+	UsernameChangeCount      int        `json:"-"`
+	UsernameCooldownUntil    *time.Time `json:"usernameCooldownUntil,omitempty"`
+	UsernameChangesRemaining int        `json:"usernameChangesRemaining"`
+	FrozenAt                 *time.Time `json:"frozenAt,omitempty"`
+	ClosedAt                 *time.Time `json:"closedAt,omitempty"`
+	IsFrozen                 bool       `json:"isFrozen"`
+	IsClosed                 bool       `json:"isClosed"`
+	ClosesAt                 *time.Time `json:"closesAt,omitempty"`
+}
+
+const (
+	UsernameChangeLimit    = 3
+	UsernameChangeCooldown = 7 * 24 * time.Hour
+	AccountFreezeGraceDays = 30
+)
+
+// ApplyUsernameQuota fills UsernameChangesRemaining from the stored count.
+// An expired cooldown clears the allowance so the next window starts at the limit.
+func (u *User) ApplyUsernameQuota(now time.Time) {
+	if u.UsernameCooldownUntil != nil && !now.Before(*u.UsernameCooldownUntil) {
+		u.UsernameChangeCount = 0
+		u.UsernameCooldownUntil = nil
+	}
+	if u.UsernameCooldownUntil != nil && now.Before(*u.UsernameCooldownUntil) {
+		u.UsernameChangesRemaining = 0
+		return
+	}
+	remaining := UsernameChangeLimit - u.UsernameChangeCount
+	if remaining < 0 {
+		remaining = 0
+	}
+	u.UsernameChangesRemaining = remaining
+}
+
+// ApplyFreezeState derives freeze and closure from frozen_at and closed_at.
+// Frozen is frozen_at set, closed_at empty, and now still inside the 30-day window.
+// Closed is closed_at set, or the window having elapsed.
+func (u *User) ApplyFreezeState(now time.Time) {
+	u.IsFrozen = false
+	u.IsClosed = false
+	u.ClosesAt = nil
+	if u.ClosedAt != nil {
+		u.IsClosed = true
+		return
+	}
+	if u.FrozenAt == nil {
+		return
+	}
+	closes := u.FrozenAt.AddDate(0, 0, AccountFreezeGraceDays)
+	if !now.Before(closes) {
+		u.IsClosed = true
+		return
+	}
+	u.IsFrozen = true
+	u.ClosesAt = &closes
 }
 
 type Certificate struct {
@@ -209,19 +264,21 @@ type Challenge struct {
 }
 
 type ChatMessage struct {
-	ID         int64          `json:"id"`
-	UserID     int64          `json:"userId"`
-	MentorID   int64          `json:"mentorId"`
-	SenderRole Role           `json:"senderRole"`
-	Body       string         `json:"body"`
-	ReadAt     *time.Time     `json:"readAt,omitempty"`
-	CreatedAt  time.Time      `json:"createdAt"`
-	ReplyTo    *int64         `json:"replyTo,omitempty"`
-	PinnedAt   *time.Time     `json:"pinnedAt,omitempty"`
-	Pinned     bool           `json:"pinned"`
-	EditedAt   *time.Time     `json:"editedAt,omitempty"`
-	Attachment *Attachment    `json:"attachment,omitempty"`
-	Reactions  []ChatReaction `json:"reactions,omitempty"`
+	ID          int64           `json:"id"`
+	UserID      int64           `json:"userId"`
+	MentorID    int64           `json:"mentorId"`
+	SenderRole  Role            `json:"senderRole"`
+	Body        string          `json:"body"`
+	ReadAt      *time.Time      `json:"readAt,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	ReplyTo     *int64          `json:"replyTo,omitempty"`
+	PinnedAt    *time.Time      `json:"pinnedAt,omitempty"`
+	Pinned      bool            `json:"pinned"`
+	EditedAt    *time.Time      `json:"editedAt,omitempty"`
+	Attachment  *Attachment     `json:"attachment,omitempty"`
+	Attachments []Attachment    `json:"attachments,omitempty"`
+	Reactions   []ChatReaction  `json:"reactions,omitempty"`
+	Buttons     json.RawMessage `json:"buttons,omitempty"`
 }
 
 type ChatReaction struct {

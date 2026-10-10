@@ -25,7 +25,6 @@ import {
   Plus,
   Rocket,
   Save,
-  ShieldCheck,
   Sparkles,
   Target,
   Terminal,
@@ -82,13 +81,14 @@ import {
   isValidAdminTab,
   type AdminTabId,
 } from "@/components/admin/nav";
-import { AdminPanelHeader } from "@/components/admin/panel-header";
+import { SectionColumns, SectionNav, SectionPanel } from "@/components/section-nav";
 import { useConfirm } from "@/components/admin/use-confirm";
 import { StatsPanel } from "@/components/admin/stats-panel";
 import { LearningPanel } from "@/components/admin/learning-panel";
 import { QuestionsPanel } from "@/components/admin/questions-panel";
 import { VideosPanel, VideoKeyPicker } from "@/components/admin/videos-panel";
 import { AnnouncePanel } from "@/components/admin/announce-panel";
+import { BotPanel } from "@/components/admin/bot-panel";
 import { PhysicalOrdersPanel } from "@/components/admin/physical-orders-panel";
 import {
   DEFAULT_PAGE_SIZE,
@@ -96,6 +96,7 @@ import {
   buildPageQuery,
   type Paginated,
 } from "@/components/admin/list-pagination";
+import { AccountIdentityFields, AccountUsernameSection } from "@/components/account-identity-fields";
 import { AdminSelect, ListToolbar } from "@/components/admin/list-toolbar";
 import { SiteSettingsPanel } from "@/components/admin/site-settings-panel";
 import { RegistrationPanel } from "@/components/admin/registration-panel";
@@ -196,113 +197,32 @@ export function AdminStudio() {
   })).filter((g) => g.items.length > 0);
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="section-kicker">{isAdmin ? "استودیو ادمین" : "استودیو منتور"}</p>
-          <h1 className="mt-1.5 text-2xl font-bold tracking-tight sm:text-3xl">
-            {isAdmin ? (
-              <>
-                پنل <span className="text-gradient-brand">مدیریت</span>
-              </>
-            ) : (
-              <>
-                پنل <span className="text-gradient-brand">منتور</span>
-              </>
-            )}
-          </h1>
-          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            {isAdmin
-              ? "افراد، ثبت‌نام، محتوای دوره، ارتباط و تنظیمات سایت — گروه‌بندی‌شده تا چیزی گم نشود."
-              : MENTOR_HINT}
-          </p>
-        </div>
-        <Badge variant="accent" className="gap-1 rounded-lg px-3 py-1.5">
-          <ShieldCheck className="h-4 w-4" /> {isAdmin ? "ادمین" : "منتور"}
-        </Badge>
-      </div>
+    <div>
+      <header className="mb-6 space-y-1">
+        <h1 className="text-2xl font-black tracking-tight">{isAdmin ? "مدیریت" : "منتور"}</h1>
+        <p className="text-sm text-muted-foreground">
+          {isAdmin
+            ? "افراد، ثبت‌نام، محتوای دوره، ارتباط و تنظیمات سایت."
+            : MENTOR_HINT}
+        </p>
+      </header>
 
-      {/* Mobile: horizontal grouped chips */}
-      <nav className="lg:hidden" aria-label={isAdmin ? "بخش‌های مدیریت" : "بخش‌های منتور"}>
-        <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-1">
-          {visibleGroups.map((group) => (
-            <div key={group.title} className="flex shrink-0 flex-col gap-1.5">
-              <p className="px-1 text-[10px] font-bold text-muted-foreground">{group.title}</p>
-              <div className="flex gap-1.5">
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  const active = tab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setTab(item.id)}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-bold transition-colors",
-                        active
-                          ? "bg-primary text-primary-foreground shadow-offset-sm"
-                          : "border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground",
-                      )}
-                    >
-                      <Icon className="h-3.5 w-3.5 shrink-0" />
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </nav>
-
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
-        <aside className="hidden w-52 shrink-0 lg:sticky lg:top-24 lg:block">
-          <nav
-            className="space-y-3 rounded-xl border border-border bg-card p-2.5"
-            aria-label={isAdmin ? "منوی مدیریت" : "منوی منتور"}
-          >
-            {visibleGroups.map((group) => (
-              <div key={group.title}>
-                <p className="mb-1 px-2 text-[11px] font-bold text-muted-foreground">
-                  {group.title}
-                </p>
-                <ul className="space-y-0.5">
-                  {group.items.map((item) => {
-                    const Icon = item.icon;
-                    const active = tab === item.id;
-                    return (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          onClick={() => setTab(item.id)}
-                          aria-current={active ? "page" : undefined}
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm font-bold transition-colors",
-                            active
-                              ? "bg-primary text-primary-foreground shadow-offset-sm"
-                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                          )}
-                        >
-                          <Icon className="h-4 w-4 shrink-0" />
-                          {item.label}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ))}
-          </nav>
-        </aside>
-
-        <div className="min-w-0 flex-1">
-          {navItem && (
-            <AdminPanelHeader
-              title={navItem.label}
-              description={navItem.description}
-              icon={navItem.icon}
-            />
-          )}
+      <SectionColumns>
+        <SectionNav
+          label={isAdmin ? "بخش‌های مدیریت" : "بخش‌های منتور"}
+          groups={visibleGroups.map((group) => ({
+            title: group.title,
+            items: group.items.map((item) => ({ id: item.id, label: item.label })),
+          }))}
+          activeId={tab}
+          onSelect={setTab}
+        />
+        <SectionPanel
+          id="admin-section"
+          titleId="admin-section-title"
+          title={navItem?.label ?? ""}
+          description={navItem?.description ?? ""}
+        >
           {tab === "stats" && isAdmin && <StatsPanel />}
           {tab === "learning" && <LearningPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
@@ -318,9 +238,10 @@ export function AdminStudio() {
           {tab === "events" && <AdminEventsPanel />}
           {tab === "challenges" && isAdmin && <ChallengesPanel />}
           {tab === "announce" && isAdmin && <AnnouncePanel />}
+          {tab === "bots" && isAdmin && <BotPanel />}
           {tab === "chat-export" && isAdmin && <ChatExportPanel />}
-        </div>
-      </div>
+        </SectionPanel>
+      </SectionColumns>
     </div>
   );
 }
@@ -374,7 +295,7 @@ function UsersPanel() {
   const del = async (u: User) => {
     if (
       !(await confirm(
-        "حذف کاربر",
+        "حذف دائمی",
         `حساب «${u.name}» (${u.email}) برای همیشه حذف شود؟ این عمل بازگشت‌ناپذیر است.`
       ))
     ) {
@@ -497,8 +418,8 @@ function UsersPanel() {
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
                   )}
-                  {canMutate && u.id !== currentUser?.id && (
-                    <Button size="sm" variant="ghost" className="h-8 px-2 text-destructive" disabled={busy === u.id} onClick={() => del(u)} title="حذف">
+                  {canMutate && u.id !== currentUser?.id && (u.isFrozen || u.isClosed) && (
+                    <Button size="sm" variant="ghost" className="h-8 px-2 text-destructive" disabled={busy === u.id} onClick={() => del(u)} title="حذف دائمی" aria-label="حذف دائمی">
                       {busy === u.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                     </Button>
                   )}
@@ -644,37 +565,24 @@ export function UserDialog({
               : "اطلاعات کاربر را به‌روزرسانی کنید."}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3">
-          <div className="space-y-1.5">
-            <Label>نام</Label>
-            <Input value={form.name ?? ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>شناسه</Label>
-            <Input
-              value={form.username ?? ""}
-              onChange={(e) => setForm({ ...form, username: e.target.value.toLowerCase() })}
-              dir="ltr"
-              className="text-left"
-              placeholder="مثلاً ahp"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label>ایمیل</Label>
-            <Input type="email" value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>تلفن</Label>
-            <Input
-              value={form.phone ?? ""}
-              onChange={(e) => setForm({ ...form, phone: clampPhoneInput(e.target.value) })}
-              dir="ltr"
-              className="text-left"
-              placeholder="09xxxxxxxxx"
-              inputMode="tel"
-              maxLength={PHONE_INPUT_MAX_LEN}
-            />
-          </div>
+        <div className="space-y-8">
+          <AccountIdentityFields
+            idPrefix="admin-user"
+            name={form.name ?? ""}
+            email={form.email ?? ""}
+            phone={form.phone ?? ""}
+            onName={(value) => setForm({ ...form, name: value })}
+            onEmail={(value) => setForm({ ...form, email: value })}
+            onPhone={(value) => setForm({ ...form, phone: clampPhoneInput(value) })}
+            phoneMaxLength={PHONE_INPUT_MAX_LEN}
+          />
+          <AccountUsernameSection
+            mode="admin"
+            idPrefix="admin-user"
+            value={form.username ?? ""}
+            onChange={(value) => setForm({ ...form, username: value })}
+          />
+          <section className="space-y-4 border-t border-border pt-6">
           <div className="space-y-1.5">
             <Label>نقش</Label>
             <select
@@ -745,6 +653,7 @@ export function UserDialog({
               />
             </div>
           )}
+          </section>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>انصراف</Button>

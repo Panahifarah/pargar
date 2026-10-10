@@ -16,9 +16,10 @@ const pushChannel = "pargar:push"
 // Hub manages per-user websocket connections and fans out messages.
 // Messages are published on a shared Redis channel so all instances deliver to their own local clients.
 type Hub struct {
-	mu    sync.RWMutex
-	conns map[int64]map[*Client]struct{}
-	rdb   *redis.Client
+	mu     sync.RWMutex
+	conns  map[int64]map[*Client]struct{}
+	rdb    *redis.Client
+	onSeen func(userID int64)
 }
 
 type Client struct {
@@ -84,6 +85,26 @@ func (h *Hub) Online(userID int64) bool {
 	return len(h.conns[userID]) > 0
 }
 
+// SetSeen records a callback invoked when a user connects, stays connected, or disconnects.
+func (h *Hub) SetSeen(fn func(userID int64)) {
+	h.mu.Lock()
+	h.onSeen = fn
+	h.mu.Unlock()
+}
+
+func (h *Hub) noteSeen(userID int64) {
+	if userID == 0 {
+		return
+	}
+	h.mu.RLock()
+	fn := h.onSeen
+	h.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	go fn(userID)
+}
+
 // Register adds a new client connection for a user.
 func (h *Hub) Register(userID int64, conn *websocket.Conn) *Client {
 	c := &Client{hub: h, conn: conn, user: userID, send: make(chan []byte, 16)}
@@ -93,23 +114,29 @@ func (h *Hub) Register(userID int64, conn *websocket.Conn) *Client {
 	}
 	h.conns[userID][c] = struct{}{}
 	h.mu.Unlock()
+	h.noteSeen(userID)
 	go c.writePump()
 	go c.readPump()
 	return c
 }
 
 func (h *Hub) Unregister(c *Client) {
+	offline := false
 	h.mu.Lock()
 	if set, ok := h.conns[c.user]; ok {
 		if _, ok := set[c]; ok {
 			delete(set, c)
 			if len(set) == 0 {
 				delete(h.conns, c.user)
+				offline = true
 			}
 		}
 	}
 	h.mu.Unlock()
 	close(c.send)
+	if offline {
+		h.noteSeen(c.user)
+	}
 }
 
 // close unregisters the client and closes its connection exactly once,
@@ -148,6 +175,7 @@ func (c *Client) writePump() {
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+			c.hub.noteSeen(c.user)
 		}
 	}
 }

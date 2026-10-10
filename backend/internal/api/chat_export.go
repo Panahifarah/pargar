@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"pargar/backend/internal/models"
@@ -49,16 +50,17 @@ type chatExportAttachment struct {
 }
 
 type chatExportMessage struct {
-	ID         int64                 `json:"id,omitempty"`
-	Body       string                `json:"body"`
-	SenderRole string                `json:"senderRole"`
-	CreatedAt  time.Time             `json:"createdAt"`
-	ReadAt     *time.Time            `json:"readAt,omitempty"`
-	ReplyTo    *int64                `json:"replyTo,omitempty"`
-	Pinned     bool                  `json:"pinned"`
-	PinnedAt   *time.Time            `json:"pinnedAt,omitempty"`
-	EditedAt   *time.Time            `json:"editedAt,omitempty"`
-	Attachment *chatExportAttachment `json:"attachment,omitempty"`
+	ID          int64                  `json:"id,omitempty"`
+	Body        string                 `json:"body"`
+	SenderRole  string                 `json:"senderRole"`
+	CreatedAt   time.Time              `json:"createdAt"`
+	ReadAt      *time.Time             `json:"readAt,omitempty"`
+	ReplyTo     *int64                 `json:"replyTo,omitempty"`
+	Pinned      bool                   `json:"pinned"`
+	PinnedAt    *time.Time             `json:"pinnedAt,omitempty"`
+	EditedAt    *time.Time             `json:"editedAt,omitempty"`
+	Attachment  *chatExportAttachment  `json:"attachment,omitempty"`
+	Attachments []chatExportAttachment `json:"attachments,omitempty"`
 }
 
 type chatExportConversation struct {
@@ -186,20 +188,25 @@ func (s *Server) buildProjectChatExport(r *http.Request) (*chatExportPayload, []
 					PinnedAt:   m.PinnedAt,
 					EditedAt:   m.EditedAt,
 				}
-				if m.Attachment != nil {
-					att := &chatExportAttachment{
-						Type: m.Attachment.Type,
-						Name: m.Attachment.Name,
-						Size: m.Attachment.Size,
-					}
-					key := mediaKeyFromURL(m.Attachment.URL)
+				list := m.Attachments
+				if len(list) == 0 && m.Attachment != nil {
+					list = []models.Attachment{*m.Attachment}
+				}
+				exported := make([]chatExportAttachment, 0, len(list))
+				for i, src := range list {
+					att := chatExportAttachment{Type: src.Type, Name: src.Name, Size: src.Size}
+					key := mediaKeyFromURL(src.URL)
 					if key == "" {
 						att.Missing = true
 					} else {
+						label := safeExportFilename(src.Name)
+						if len(list) > 1 {
+							label = fmt.Sprintf("%d-%s", i+1, label)
+						}
 						rel := filepath.ToSlash(filepath.Join(
 							"attachments",
 							convKey,
-							fmt.Sprintf("%d-%s", m.ID, safeExportFilename(m.Attachment.Name)),
+							fmt.Sprintf("%d-%s", m.ID, label),
 						))
 						rc, _, _, err := s.storage.Open(key)
 						if err != nil {
@@ -210,7 +217,14 @@ func (s *Server) buildProjectChatExport(r *http.Request) (*chatExportPayload, []
 							files = append(files, zipAttachmentFile{Path: rel, Key: key})
 						}
 					}
-					item.Attachment = att
+					exported = append(exported, att)
+				}
+				if len(exported) > 0 {
+					first := exported[0]
+					item.Attachment = &first
+					if len(exported) > 1 {
+						item.Attachments = exported
+					}
 				}
 				batch = append(batch, item)
 			}
@@ -373,11 +387,17 @@ func (s *Server) handleAdminChatExportRestore(w http.ResponseWriter, r *http.Req
 			if created.IsZero() {
 				created = time.Now().UTC()
 			}
-			var att *models.Attachment
-			if m.Attachment != nil {
-				att = s.materializeRestoredAttachment(studentID, m.Attachment, zipFiles)
+			srcs := m.Attachments
+			if len(srcs) == 0 && m.Attachment != nil {
+				srcs = []chatExportAttachment{*m.Attachment}
 			}
-			if _, err := s.store.ImportChatMessage(r.Context(), studentID, mentorID, role, m.Body, att, created, m.Pinned); err != nil {
+			atts := make([]models.Attachment, 0, len(srcs))
+			for i := range srcs {
+				if got := s.materializeRestoredAttachment(studentID, &srcs[i], zipFiles); got != nil {
+					atts = append(atts, *got)
+				}
+			}
+			if _, err := s.store.ImportChatMessage(r.Context(), studentID, mentorID, role, m.Body, atts, created, m.Pinned); err != nil {
 				continue
 			}
 			imported++
@@ -459,6 +479,8 @@ type bytesFile struct {
 
 func (b bytesFile) Close() error { return nil }
 
+var restoreMediaSeq atomic.Uint64
+
 func (s *Server) materializeRestoredAttachment(ownerID int64, src *chatExportAttachment, zipFiles map[string][]byte) *models.Attachment {
 	if src == nil {
 		return nil
@@ -476,7 +498,7 @@ func (s *Server) materializeRestoredAttachment(ownerID int64, src *chatExportAtt
 	if src.Path != "" && zipFiles != nil {
 		path := filepath.ToSlash(src.Path)
 		if raw, ok := zipFiles[path]; ok && len(raw) > 0 {
-			key := fmt.Sprintf("chats/%d-%d%s", ownerID, time.Now().UnixNano(), filepath.Ext(name))
+			key := fmt.Sprintf("chats/%d-%d-%d%s", ownerID, time.Now().UnixNano(), restoreMediaSeq.Add(1), filepath.Ext(name))
 			url, err := s.storage.Save(key, bytesFile{Reader: bytes.NewReader(raw)}, int64(len(raw)))
 			if err == nil {
 				return &models.Attachment{

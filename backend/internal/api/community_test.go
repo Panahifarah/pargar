@@ -11,18 +11,15 @@ func TestCommunityEndpointPublic(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("community: %d %v", code, body)
 	}
-	don, ok := body["donation"].(map[string]any)
+	socials, ok := body["socials"].([]any)
 	if !ok {
-		t.Fatalf("missing donation: %v", body)
+		t.Fatalf("missing socials: %v", body)
 	}
-	if _, ok := don["enabled"]; !ok {
-		t.Fatalf("missing donation.enabled: %v", don)
+	if socials == nil {
+		t.Fatal("socials must be a list")
 	}
-	if don["mode"] != "chat" {
-		t.Fatalf("donation.mode want chat, got %v", don["mode"])
-	}
-	if _, hasCard := don["cardNumber"]; hasCard {
-		t.Fatal("public card number must not be exposed")
+	if _, hasDonation := body["donation"]; hasDonation {
+		t.Fatal("donation must not be exposed")
 	}
 	// Telegram channel surface was removed from the product.
 	if _, hasChannel := body["channel"]; hasChannel {

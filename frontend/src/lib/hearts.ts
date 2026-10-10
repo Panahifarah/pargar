@@ -2,8 +2,8 @@
 
 import type { Role, User } from "./types";
 
-/** Hard cap for students — no timed refill. */
-export const MAX_HEARTS = 3;
+/** Absolute student cap. A heart returns on the server every few hours. */
+export const MAX_HEARTS = 5;
 
 /** Infinity glyph for staff heart display. */
 export const INFINITE_HEARTS_LABEL = "∞";

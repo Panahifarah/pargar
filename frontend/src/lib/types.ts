@@ -21,6 +21,13 @@ export interface User {
   securityQuestion?: string;
   hasSecurityAnswer?: boolean;
   createdAt: string;
+  usernameChangesRemaining?: number;
+  usernameCooldownUntil?: string;
+  frozenAt?: string;
+  closedAt?: string;
+  closesAt?: string;
+  isFrozen?: boolean;
+  isClosed?: boolean;
 }
 
 export interface Certificate {
@@ -195,7 +202,9 @@ export interface ChatMessage {
   pinned?: boolean;
   editedAt?: string;
   attachment?: ChatAttachment;
+  attachments?: ChatAttachment[];
   reactions?: ChatReaction[];
+  buttons?: { text: string }[];
 }
 
 export interface ChatReaction {
@@ -210,6 +219,7 @@ export interface Mentor {
   email: string;
   role: Role;
   online?: boolean;
+  lastSeen?: string;
   avatarVariant?: "marble" | "beam" | "pixel" | "sunset" | "ring" | "bauhaus";
   avatarPalette?: string;
   avatarPhoto?: string;
@@ -222,12 +232,18 @@ export interface Conversation {
     email: string;
     role: Role;
     online?: boolean;
+    lastSeen?: string;
+    saved?: boolean;
     avatarVariant?: "marble" | "beam" | "pixel" | "sunset" | "ring" | "bauhaus";
     avatarPalette?: string;
     avatarPhoto?: string;
   };
   lastMessage?: ChatMessage;
   unreadCount: number;
+  messageCount?: number;
+  pinnedRank: number | null;
+  muted: boolean;
+  archived: boolean;
 }
 
 export interface LeaderboardEntry {
@@ -268,16 +284,23 @@ export interface MCQQuestion {
 export interface PublicProfile {
   id: number;
   name: string;
-  username: string;
+  username?: string;
   role: Role;
-  xp: number;
-  hearts: number;
-  streakCurrent: number;
-  streakLongest: number;
+  xp?: number;
+  hearts?: number;
+  streakCurrent?: number;
+  streakLongest?: number;
   avatarVariant?: User["avatarVariant"];
   avatarPalette?: string;
   avatarPhoto?: string;
-  isLocked: boolean;
+  isLocked?: boolean;
+  isFrozen?: boolean;
+  isClosed?: boolean;
+  private?: boolean;
+  public?: boolean;
+  banner?: string;
+  createdAt?: string;
+  socialLinks?: { name: string; url: string }[];
 }
 
 export interface AdminStats {

@@ -16,7 +16,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <MotionConfig reducedMotion="user" transition={softTween}>
           <ErrorBoundary area="app">{children}</ErrorBoundary>
         </MotionConfig>
-        <Toaster position="top-center" richColors closeButton />
+        <Toaster
+          position="top-center"
+          richColors
+          offset={76}
+          mobileOffset={{ top: "4.25rem", left: "0.75rem", right: "0.75rem" }}
+          closeButton
+          toastOptions={{ duration: 4000 }}
+        />
       </ThemeProvider>
     </QueryClientProvider>
   );

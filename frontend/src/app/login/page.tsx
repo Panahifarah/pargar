@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Loader2, ShieldCheck, Timer, Zap } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { useAuth } from "@/lib/auth-store";
-import { http, toUserError } from "@/lib/api";
+import { ApiError, http, toUserError } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +34,7 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [captchaError, setCaptchaError] = useState<string | null>(null);
 
   const { data: registerStatus } = useQuery({
     queryKey: ["auth", "register-status"],
@@ -43,7 +44,7 @@ export default function LoginPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!challenge) {
-      setError("ابتدا کد امنیتی را بارگذاری کنید");
+      setCaptchaError("ابتدا کد امنیتی را بارگذاری کنید");
       setCaptchaKey((k) => k + 1);
       return;
     }
@@ -61,7 +62,10 @@ export default function LoginPage() {
       router.push("/cap");
     } catch (err) {
       setError(toUserError(err, "ورود ناموفق بود"));
-      setCaptchaKey((k) => k + 1);
+      // 429 is returned before the captcha is consumed, so keep this challenge.
+      if (!(err instanceof ApiError) || err.status !== 429) {
+        setCaptchaKey((k) => k + 1);
+      }
     } finally {
       setLoading(false);
     }
@@ -137,7 +141,7 @@ export default function LoginPage() {
                 value={captchaAnswer}
                 onChange={setCaptchaAnswer}
                 onChallenge={setChallenge}
-                onError={setError}
+                onError={setCaptchaError}
               />
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span>مرا به یاد داشته باش</span>
@@ -147,7 +151,11 @@ export default function LoginPage() {
                   aria-label="مرا به یاد داشته باش"
                 />
               </label>
-              {error && <p className="text-sm text-destructive">{error}</p>}
+              {(error || captchaError) && (
+                <p className="text-sm text-destructive" role="alert">
+                  {error || captchaError}
+                </p>
+              )}
               <Button
                 type="submit"
                 variant="gradient"

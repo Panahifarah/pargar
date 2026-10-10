@@ -33,6 +33,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "کاربر پیدا نشد")
 		return
 	}
+	u = s.settleAccount(r.Context(), u)
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }
 
@@ -442,6 +443,16 @@ func (s *Server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "دسترسی کافی ندارید")
 		return
 	}
+	target, err := s.store.GetUserByID(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "کاربر پیدا نشد")
+		return
+	}
+	target = s.settleAccount(r.Context(), target)
+	if !target.IsFrozen && !target.IsClosed {
+		writeErr(w, http.StatusConflict, msgDeleteNotFrozen)
+		return
+	}
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		writeErr(w, http.StatusInternalServerError, "حذف کاربر ممکن نشد")
 		return
@@ -836,59 +847,4 @@ func validateAdminEvent(e *models.Event, create bool) string {
 	}
 	_ = create
 	return ""
-}
-
-// ---- announcements ----
-
-func (s *Server) handleAdminAnnounce(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Title    string `json:"title"`
-		Body     string `json:"body"`
-		Route    string `json:"route"`
-		Category string `json:"category"`
-	}
-	if err := bodyJSON(r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "دادهٔ ارسالی نامعتبر است")
-		return
-	}
-	req.Title = strings.TrimSpace(req.Title)
-	req.Body = strings.TrimSpace(req.Body)
-	req.Route = strings.TrimSpace(req.Route)
-	if utf8.RuneCountInString(req.Title) < 3 {
-		writeErr(w, http.StatusBadRequest, "عنوان اطلاعیه خیلی کوتاه است")
-		return
-	}
-	if utf8.RuneCountInString(req.Title) > 200 {
-		writeErr(w, http.StatusBadRequest, "عنوان اطلاعیه خیلی طولانی است")
-		return
-	}
-	if utf8.RuneCountInString(req.Body) < 8 {
-		writeErr(w, http.StatusBadRequest, "متن اطلاعیه خیلی کوتاه است")
-		return
-	}
-	if utf8.RuneCountInString(req.Body) > 500 {
-		writeErr(w, http.StatusBadRequest, "متن اطلاعیه خیلی طولانی است")
-		return
-	}
-	if req.Category == "" {
-		req.Category = "event"
-	}
-	switch req.Category {
-	case "event", "progress", "gamification", "mentor":
-	default:
-		writeErr(w, http.StatusBadRequest, "دستهٔ اطلاعیه نامعتبر است")
-		return
-	}
-	userIDs, err := s.store.AllActiveUserIDs(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "بارگذاری کاربران ممکن نشد")
-		return
-	}
-	go func() {
-		for _, uid := range userIDs {
-			_ = s.notify.Notify(context.Background(), uid, req.Category, "announcement",
-				req.Title, req.Body, req.Route, nil)
-		}
-	}()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recipients": len(userIDs)})
 }

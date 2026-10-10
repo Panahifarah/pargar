@@ -22,6 +22,17 @@ export function formatStreakLabel(days: number) {
 /** Quiz option letters: الف، ب، ج، د، … */
 const FA_OPTION_LETTERS = ["الف", "ب", "ج", "د", "ه", "و"] as const;
 
+/** Jalali day plus clock, for conversation rows. */
+export function formatJalaliStamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return "";
+  }
+  const day = new Intl.DateTimeFormat("fa-IR", { day: "numeric", month: "short" }).format(d);
+  const time = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit" }).format(d);
+  return `${day} · ${time}`;
+}
+
 export function formatOptionLetter(index: number): string {
   if (index >= 0 && index < FA_OPTION_LETTERS.length) {
     return FA_OPTION_LETTERS[index];

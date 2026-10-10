@@ -1,42 +1,25 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { HeartHandshake, LogIn, MessageSquareHeart } from "lucide-react";
-import Link from "next/link";
+import { ExternalLink, Share2 } from "lucide-react";
 import { http, toUserError } from "@/lib/api";
-import { useAuth } from "@/lib/auth-store";
 import { Panel } from "@/components/panel";
 import { Button } from "@/components/ui/button";
 
+export type SocialLink = { name: string; url: string };
+
 export type CommunityPayload = {
-  donation: {
-    enabled: boolean;
-    note: string;
-    mode: "chat";
-    contactId?: number;
-    draft: string;
-  };
+  socials: SocialLink[];
 };
 
-function openDonationChat(contactId: number | undefined, draft: string) {
-  window.dispatchEvent(
-    new CustomEvent("pargar:chat", {
-      detail: { open: true, with: contactId, draft },
-    }),
-  );
-}
-
 export function CommunityPanel() {
-  const user = useAuth((s) => s.user);
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["community", user?.id ?? "guest"],
+    queryKey: ["community"],
     queryFn: () => http.get<CommunityPayload>("/api/community"),
   });
 
   if (isLoading) {
-    return (
-      <div className="h-72 animate-pulse rounded-2xl border-2 border-border bg-muted/40" />
-    );
+    return <div className="h-72 animate-pulse rounded-2xl border-2 border-border bg-muted/40" />;
   }
 
   if (isError) {
@@ -50,40 +33,34 @@ export function CommunityPanel() {
     );
   }
 
-  const donation = data?.donation;
+  const socials = data?.socials ?? [];
 
   return (
     <div className="mx-auto max-w-xl">
       <Panel
-        title="حمایت مالی"
-        description="بدون کارت عمومی — اگر لاگین باشید، گفتگو با تیم باز می‌شود."
-        icon={<HeartHandshake className="h-5 w-5" />}
-        tint="bg-accent/15 text-accent"
+        title="شبکه‌های پرگار"
+        description="راه‌های رسمی ارتباط با برنامه. لینک شخصی هر کاربر روی پروفایل خودش است."
+        icon={<Share2 className="h-5 w-5" />}
+        tint="bg-primary/15 text-primary"
       >
-        {donation?.enabled ? (
-          <div className="space-y-4 pt-1">
-            <p className="text-sm leading-relaxed text-muted-foreground">{donation.note}</p>
-            <div className="rounded-2xl border border-border bg-muted/20 p-5 text-sm leading-relaxed">
-              جزئیات واریز فقط در پیام خصوصی رد و بدل می‌شود؛ اینجا چیزی عمومی نیست.
-            </div>
-            {user ? (
-              <Button
-                className="w-full gap-2"
-                size="lg"
-                onClick={() => openDonationChat(donation.contactId, donation.draft)}
-              >
-                <MessageSquareHeart className="h-4 w-4" /> پیام دربارهٔ دونیت
-              </Button>
-            ) : (
-              <Button asChild className="w-full gap-2" size="lg">
-                <Link href="/login">
-                  <LogIn className="h-4 w-4" /> ورود برای هماهنگی دونیت
-                </Link>
-              </Button>
-            )}
-          </div>
+        {socials.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">هنوز شبکه‌ای ثبت نشده است.</p>
         ) : (
-          <p className="py-8 text-center text-sm text-muted-foreground">حمایت فعلاً غیرفعال است.</p>
+          <ul className="space-y-2 pt-1">
+            {socials.map((s) => (
+              <li key={s.url}>
+                <a
+                  href={s.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-between gap-3 rounded-xl border-2 border-border/70 px-3 py-2.5 text-sm font-bold transition-colors hover:border-primary/50 hover:bg-primary/5"
+                >
+                  <span>{s.name}</span>
+                  <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </a>
+              </li>
+            ))}
+          </ul>
         )}
       </Panel>
     </div>

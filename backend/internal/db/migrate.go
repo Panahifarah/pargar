@@ -11,9 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// migrateLockID is held for the whole migration pass so two replicas cannot
+// apply the same file at once. The lock lives on one pooled connection and
+// is released when that session ends.
+const migrateLockID int64 = 764727013
+
 // Migrate runs all *.sql files in the migrations fs in lexicographic order.
 // Tracks applied migrations in schema_migrations.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate lock: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockID); err != nil {
+		return fmt.Errorf("migrate lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrateLockID)
+	}()
+
 	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
 		return fmt.Errorf("create migrations table: %w", err)
 	}

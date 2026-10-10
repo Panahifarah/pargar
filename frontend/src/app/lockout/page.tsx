@@ -89,8 +89,7 @@ export default function LockoutPage() {
       <p className="text-xs font-bold tracking-wider text-destructive">حساب قفل شد</p>
       <h1 className="mt-2 text-3xl font-bold tracking-tight">جان‌هایتان تمام شد</h1>
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-        هر پاسخ اشتباه در آزمون یک جان کم می‌کند. با تمام شدن سه جان، یادگیری و آزمون قفل می‌شود تا
-        تیم مسیر را بررسی کند — خودتان نمی‌توانید قفل را باز کنید.
+        جان‌ها معمولاً خودشان برمی‌گردند. این صفحه وقتی دیده می‌شود که مدیریت حساب را قفل کرده باشد.
       </p>
 
       <div className="mt-6 flex items-center gap-2">
@@ -144,7 +143,7 @@ export default function LockoutPage() {
           className={cn("w-full text-muted-foreground")}
           onClick={() => router.push("/unwrap?tab=community")}
         >
-          جامعه و حمایت
+          شبکه‌های پرگار
         </Button>
       </div>
     </div>

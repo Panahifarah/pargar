@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Panahifarah/pargar/releases/tag/v0.1.3"><img src="https://img.shields.io/github/v/tag/Panahifarah/pargar?label=release&color=5B4CDB" alt="release" /></a>
+  <a href="https://github.com/Panahifarah/pargar/releases/tag/v0.2.0"><img src="https://img.shields.io/github/v/tag/Panahifarah/pargar?label=release&color=5B4CDB" alt="release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-5B4CDB" alt="AGPL-3.0" /></a>
 </p>
 

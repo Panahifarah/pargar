@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Award,
   ArrowLeft,
@@ -28,6 +28,7 @@ import { useAuth } from "@/lib/auth-store";
 import { cn, formatFaNumber, formatStreakLabel } from "@/lib/utils";
 import { clampHearts, hasInfiniteHearts, INFINITE_HEARTS_LABEL, MAX_HEARTS } from "@/lib/hearts";
 import { toast } from "@/components/providers";
+import { SafeMarkdown } from "@/components/safe-markdown";
 
 export default function CapPage() {
   return (
@@ -150,6 +151,8 @@ function CapPageInner() {
         </div>
       </div>
 
+      <PinnedAnnouncement />
+
       {lowHearts && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-destructive/30 bg-destructive/5 px-5 py-4">
           <div className="flex items-start gap-3">
@@ -157,7 +160,7 @@ function CapPageInner() {
             <div>
               <p className="text-sm font-extrabold text-destructive">فقط {formatFaNumber(hearts)} جان مانده</p>
               <p className="text-xs text-muted-foreground">
-                یک اشتباه دیگر حساب را قفل می‌کند. قبل از آزمون مطمئن شوید؛ اگر گیر کردید با منتور حرف بزنید.
+                جان‌ها خودشان برمی‌گردند. تا برگشتن یک جان، آزمون تازه صبر می‌کند.
               </p>
             </div>
           </div>
@@ -446,6 +449,244 @@ function CapSkeleton() {
           <Skeleton className="mt-6 h-11 w-40 rounded-xl" />
         </div>
       </div>
+    </div>
+  );
+}
+
+type CapAnnouncement = { title: string; body: string; route: string };
+
+function PinnedAnnouncement() {
+  const router = useRouter();
+  const scroller = useRef<HTMLDivElement>(null);
+  const gesture = useRef<{
+    x: number;
+    y: number;
+    scroll: number;
+    index: number;
+    pointerId: number;
+    axis: "x" | "y" | null;
+    dx: number;
+  } | null>(null);
+  const moved = useRef(0);
+  const [index, setIndex] = useState(0);
+  const q = useQuery({
+    queryKey: ["announcement-pinned"],
+    queryFn: () =>
+      http.get<{ announcement: CapAnnouncement | null; announcements?: CapAnnouncement[] }>("/api/announcements/pinned"),
+  });
+  const items = q.data?.announcements?.length
+    ? q.data.announcements
+    : q.data?.announcement
+      ? [q.data.announcement]
+      : [];
+  const count = items.length;
+  const indexRef = useRef(0);
+  const hoverRef = useRef(false);
+  const downRef = useRef(false);
+  const programmatic = useRef(0);
+  const scrollSeq = useRef(0);
+  const wantScroll = useRef(false);
+  const scrollBehavior = useRef<ScrollBehavior>("smooth");
+  const [epoch, setEpoch] = useState(0);
+
+  const stride = (el: HTMLDivElement) => {
+    const card = el.firstElementChild as HTMLElement | null;
+    const gap = 12;
+    return (card?.offsetWidth || el.clientWidth || 1) + gap;
+  };
+
+  const goTo = (next: number, behavior: ScrollBehavior = "smooth") => {
+    if (count < 2) return;
+    const i = ((next % count) + count) % count;
+    const from = indexRef.current;
+    const neighbor = Math.abs(i - from) === 1;
+    scrollBehavior.current = neighbor && behavior === "smooth" ? "smooth" : "auto";
+    wantScroll.current = true;
+    indexRef.current = i;
+    setIndex(i);
+    setEpoch((n) => n + 1);
+  };
+
+  const stepBy = (delta: number) => {
+    const from = indexRef.current;
+    const dest = from + delta < 0 ? count - 1 : from + delta >= count ? 0 : from + delta;
+    goTo(dest, Math.abs(dest - from) === 1 ? "smooth" : "auto");
+  };
+
+  const stepRef = useRef(stepBy);
+  stepRef.current = stepBy;
+
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || count < 2 || !wantScroll.current) return;
+    wantScroll.current = false;
+    const token = scrollSeq.current + 1;
+    scrollSeq.current = token;
+    programmatic.current = token;
+    const left = indexRef.current * stride(el);
+    let settledOnce = false;
+    const finish = (force: boolean) => {
+      if (settledOnce || scrollSeq.current !== token) return;
+      if (gesture.current?.axis === "x") return;
+      const target = indexRef.current * stride(el);
+      const settled = Math.abs(el.scrollLeft - target) <= 2;
+      if (!settled && !force) return;
+      if (!settled) {
+        el.style.scrollBehavior = "auto";
+        el.scrollLeft = target;
+      }
+      settledOnce = true;
+      if (programmatic.current === token) programmatic.current = 0;
+      el.removeEventListener("scrollend", onEnd);
+    };
+    const onEnd = () => {
+      if (scrollSeq.current !== token || !programmatic.current) return;
+      finish(false);
+    };
+    el.addEventListener("scrollend", onEnd);
+    el.style.scrollBehavior = scrollBehavior.current === "smooth" ? "smooth" : "auto";
+    el.scrollTo({ left, behavior: scrollBehavior.current });
+    const soon = window.setTimeout(() => finish(false), scrollBehavior.current === "auto" ? 40 : 700);
+    const later = window.setTimeout(() => finish(true), 1200);
+    return () => {
+      window.clearTimeout(soon);
+      window.clearTimeout(later);
+      el.removeEventListener("scrollend", onEnd);
+    };
+  }, [index, epoch, count]);
+
+  useEffect(() => {
+    if (count < 2) return;
+    const id = window.setInterval(() => {
+      if (hoverRef.current || downRef.current) return;
+      stepRef.current(1);
+    }, 6000);
+    return () => window.clearInterval(id);
+  }, [count, epoch]);
+
+  if (count === 0) return null;
+
+  const hold = (hover: boolean | null, down: boolean | null) => {
+    if (hover != null) hoverRef.current = hover;
+    if (down != null) downRef.current = down;
+  };
+
+  const go = (next: number) => goTo(next);
+
+  const onTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = scroller.current;
+    if (!el) return;
+    gesture.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scroll: el.scrollLeft,
+      index: indexRef.current,
+      pointerId: e.pointerId,
+      axis: null,
+      dx: 0,
+    };
+    moved.current = 0;
+  };
+
+  const onTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const g = gesture.current;
+    if (!g || g.pointerId !== e.pointerId) return;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    g.dx = dx;
+    if (g.axis == null) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      g.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    }
+    if (g.axis !== "x" || count < 2) return;
+    const el = scroller.current;
+    if (!el) return;
+    if (!el.hasPointerCapture(e.pointerId)) el.setPointerCapture(e.pointerId);
+    const width = stride(el);
+    const max = width * (count - 1);
+    const pulled = g.scroll - dx;
+    const limited = Math.min(g.scroll + width, Math.max(g.scroll - width, pulled));
+    el.style.scrollBehavior = "auto";
+    el.scrollLeft = Math.min(max, Math.max(0, limited));
+  };
+
+  const onTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const g = gesture.current;
+    if (!g || g.pointerId !== e.pointerId) return;
+    moved.current = Math.max(Math.abs(g.dx), Math.abs(e.clientY - g.y));
+    const el = scroller.current;
+    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    if (g.axis !== "x" || count < 2) {
+      gesture.current = null;
+      if (el) el.style.scrollBehavior = "";
+      return;
+    }
+    const threshold = 40;
+    let next = g.index;
+    if (g.dx <= -threshold) next = g.index + 1;
+    else if (g.dx >= threshold) next = g.index - 1;
+    go(next);
+    gesture.current = null;
+  };
+
+  return (
+    <div
+      className="relative"
+      onPointerEnter={() => hold(true, null)}
+      onPointerLeave={() => {
+        if (gesture.current?.axis === "x") {
+          hold(false, null);
+          return;
+        }
+        hold(false, false);
+        setEpoch((n) => n + 1);
+      }}
+      onPointerDown={() => hold(null, true)}
+      onPointerUp={() => hold(null, false)}
+      onPointerCancel={() => hold(null, false)}
+    >
+      <div
+        ref={scroller}
+        dir="ltr"
+        style={{ direction: "ltr" }}
+        className="flex gap-3 touch-pan-y select-none overflow-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onPointerDown={onTrackPointerDown}
+        onPointerMove={onTrackPointerMove}
+        onPointerUp={onTrackPointerUp}
+        onPointerCancel={onTrackPointerUp}
+      >
+        {items.map((a, i) => (
+          <button
+            key={`${a.title}-${i}`}
+            type="button"
+            dir="rtl"
+            draggable={false}
+            onClick={() => {
+              if (Math.abs(moved.current) > 12) return;
+              if (a.route) router.push(a.route);
+            }}
+            className="block w-[calc(100%-2rem)] min-w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] shrink-0 touch-pan-y rounded-2xl border-2 border-primary/30 bg-primary/5 px-5 py-4 text-start"
+          >
+            <p className="text-xs font-bold text-primary">اطلاعیه</p>
+            <p className="mt-1 text-base font-black">{a.title}</p>
+            <SafeMarkdown text={a.body} lines={3} className="mt-1 text-sm text-muted-foreground" />
+          </button>
+        ))}
+      </div>
+      {items.length > 1 && (
+        <div className="mt-2 flex items-center justify-center gap-1.5">
+          {items.map((a, i) => (
+            <button
+              key={`${a.title}-dot-${i}`}
+              type="button"
+              aria-label={`اطلاعیه ${i + 1}`}
+              onClick={() => go(i)}
+              className={cn("h-1.5 rounded-full transition-all", i === index ? "w-4 bg-primary" : "w-1.5 bg-primary/30")}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

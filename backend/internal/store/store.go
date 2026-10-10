@@ -17,8 +17,19 @@ import (
 
 var ErrNotFound = errors.New("not found")
 var ErrPinLimit = errors.New("pin limit")
+var ErrUsernameTaken = errors.New("username taken")
+var ErrAccountFrozen = errors.New("account frozen")
+var ErrAccountClosed = errors.New("account closed")
+var ErrAccountNotFrozen = errors.New("account not frozen")
 
-const MaxHearts = 3
+// UsernameCooldownError means the caller already used the username-change allowance.
+type UsernameCooldownError struct {
+	Until time.Time
+}
+
+func (e *UsernameCooldownError) Error() string { return "username cooldown" }
+
+const MaxHearts = 5
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -80,18 +91,26 @@ func scanUser(row rowScanner) (*models.User, error) {
 		&u.LastActivityDate, &u.IsLocked, &u.LockedAt, &u.UnlockedBy, &u.IsActive,
 		&u.AvatarVariant, &u.AvatarPalette, &u.AvatarPhoto,
 		&u.Phone, &u.TelegramID, &u.TelegramUsername, &u.SecurityQuestion, &u.SecurityAnswerHash,
-		&u.CreatedAt)
+		&u.CreatedAt, &u.UsernameChangeCount, &u.UsernameCooldownUntil,
+		&u.FrozenAt, &u.ClosedAt)
 	if err != nil {
 		return nil, err
 	}
 	u.HasSecurityAnswer = u.SecurityAnswerHash != ""
+	now := time.Now()
+	u.ApplyUsernameQuota(now)
+	u.ApplyFreezeState(now)
 	return &u, nil
 }
+
+// humanOnly keeps bot accounts, which share the mentor role, out of people lists.
+const humanOnly = `NOT EXISTS (SELECT 1 FROM bot_tokens WHERE bot_user_id = users.id)`
 
 const userCols = `id, name, email, username, password_hash, role, xp, hearts, hearts_updated_at,
 	streak_current, streak_longest, last_activity_date, is_locked, locked_at,
 	unlocked_by, is_active, avatar_variant, avatar_palette, avatar_photo,
-	phone, telegram_id, telegram_username, security_question, security_answer_hash, created_at`
+	phone, telegram_id, telegram_username, security_question, security_answer_hash, created_at,
+	username_change_count, username_cooldown_until, frozen_at, closed_at`
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE email=$1`, email)
@@ -195,11 +214,70 @@ func (s *Store) LockUser(ctx context.Context, userID int64) (*models.User, error
 
 func (s *Store) UnlockUser(ctx context.Context, userID int64, by int64) (*models.User, error) {
 	row := s.pool.QueryRow(ctx, `
-		UPDATE users SET is_locked=false, locked_at=NULL, unlocked_by=$1, hearts=3, hearts_updated_at=now()
+		UPDATE users SET is_locked=false, locked_at=NULL, unlocked_by=$1, hearts=5, hearts_updated_at=now()
 		WHERE id=$2 RETURNING `+userCols, by, userID)
 	u, err := scanUser(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
+	}
+	return u, err
+}
+
+// FreezeUser records the start of the 30-day self-service freeze. It does not touch is_locked.
+func (s *Store) FreezeUser(ctx context.Context, id int64) (*models.User, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE users SET frozen_at = now()
+		WHERE id=$1 AND frozen_at IS NULL AND closed_at IS NULL
+		RETURNING `+userCols, id)
+	u, err := scanUser(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, gerr := s.GetUserByID(ctx, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if existing.IsClosed {
+			return nil, ErrAccountClosed
+		}
+		return nil, ErrAccountFrozen
+	}
+	return u, err
+}
+
+// UnfreezeUser clears frozen_at only while the 30-day window is still open and the account is not closed.
+func (s *Store) UnfreezeUser(ctx context.Context, id int64) (*models.User, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE users SET frozen_at = NULL
+		WHERE id=$1
+		  AND closed_at IS NULL
+		  AND frozen_at IS NOT NULL
+		  AND now() < frozen_at + interval '30 days'
+		RETURNING `+userCols, id)
+	u, err := scanUser(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, gerr := s.GetUserByID(ctx, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if existing.IsClosed {
+			return nil, ErrAccountClosed
+		}
+		return nil, ErrAccountNotFrozen
+	}
+	return u, err
+}
+
+// MarkAccountClosed sets closed_at once the freeze window has elapsed. A no-op returns the current user.
+func (s *Store) MarkAccountClosed(ctx context.Context, id int64) (*models.User, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE users SET closed_at = now()
+		WHERE id=$1
+		  AND closed_at IS NULL
+		  AND frozen_at IS NOT NULL
+		  AND now() >= frozen_at + interval '30 days'
+		RETURNING `+userCols, id)
+	u, err := scanUser(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s.GetUserByID(ctx, id)
 	}
 	return u, err
 }
@@ -214,7 +292,7 @@ func (s *Store) ListUsers(ctx context.Context, query string, role string, limit,
 	if offset < 0 {
 		offset = 0
 	}
-	where := `($1='' OR name ILIKE '%'||$1||'%' OR email ILIKE '%'||$1||'%' OR username ILIKE '%'||$1||'%')`
+	where := `($1='' OR name ILIKE '%'||$1||'%' OR email ILIKE '%'||$1||'%' OR username ILIKE '%'||$1||'%') AND ` + humanOnly
 	args := []any{query}
 	if role != "" {
 		args = append(args, role)
@@ -246,8 +324,47 @@ func (s *Store) ListUsers(ctx context.Context, query string, role string, limit,
 	return out, total, rows.Err()
 }
 
+// ListActiveByRoles returns active users whose role is in roles, ordered by name.
+func (s *Store) ListActiveByRoles(ctx context.Context, roles []string, limit, offset int) ([]models.User, int64, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if len(roles) == 0 {
+		return []models.User{}, 0, nil
+	}
+	var total int64
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM users WHERE is_active AND role::text = ANY($1::text[]) AND `+humanOnly, roles).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+userCols+` FROM users
+		WHERE is_active AND role::text = ANY($1::text[]) AND `+humanOnly+`
+		ORDER BY name ASC
+		LIMIT $2 OFFSET $3`, roles, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []models.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *u)
+	}
+	return out, total, rows.Err()
+}
+
 func (s *Store) ListMentors(ctx context.Context) ([]models.User, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+userCols+` FROM users WHERE role IN ('mentor','admin') AND is_active ORDER BY name`)
+	rows, err := s.pool.Query(ctx, `SELECT `+userCols+` FROM users WHERE role IN ('mentor','admin') AND is_active AND `+humanOnly+` ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -292,6 +409,101 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, name, email, username,
 		return nil, ErrNotFound
 	}
 	return u, err
+}
+
+// ChangeUsername sets a new username and consumes one allowance slot.
+// The same username is a no-op. The third change in a window starts a cooldown;
+// after that cooldown the allowance returns to the limit.
+func (s *Store) ChangeUsername(ctx context.Context, id int64, username string, now time.Time) (*models.User, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var current string
+	var count int
+	var until *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT username, username_change_count, username_cooldown_until
+		FROM users WHERE id=$1 FOR UPDATE`, id).Scan(&current, &count, &until)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	reset := false
+	if until != nil && !now.Before(*until) {
+		count = 0
+		until = nil
+		reset = true
+	}
+
+	if strings.EqualFold(current, username) {
+		if reset {
+			if _, err := tx.Exec(ctx, `
+				UPDATE users SET username_change_count=0, username_cooldown_until=NULL WHERE id=$1`, id); err != nil {
+				return nil, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return s.GetUserByID(ctx, id)
+	}
+
+	if count >= models.UsernameChangeLimit {
+		if until == nil {
+			t := now.Add(models.UsernameChangeCooldown)
+			until = &t
+			if _, err := tx.Exec(ctx, `
+				UPDATE users SET username_change_count=$2, username_cooldown_until=$3 WHERE id=$1`,
+				id, count, until); err != nil {
+				return nil, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return nil, &UsernameCooldownError{Until: *until}
+	}
+
+	var taken int64
+	err = tx.QueryRow(ctx, `SELECT id FROM users WHERE lower(username)=lower($1) AND id<>$2`, username, id).Scan(&taken)
+	if err == nil {
+		return nil, ErrUsernameTaken
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	count++
+	var nextUntil *time.Time
+	if count >= models.UsernameChangeLimit {
+		t := now.Add(models.UsernameChangeCooldown)
+		nextUntil = &t
+	}
+	row := tx.QueryRow(ctx, `
+		UPDATE users
+		SET username=$2, username_change_count=$3, username_cooldown_until=$4
+		WHERE id=$1
+		RETURNING `+userCols, id, username, count, nextUntil)
+	u, err := scanUser(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrUsernameTaken
+		}
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrUsernameTaken
+		}
+		return nil, err
+	}
+	return u, nil
 }
 
 func (s *Store) GetUserByPhone(ctx context.Context, phone string) (*models.User, error) {
@@ -1072,29 +1284,48 @@ func (s *Store) EventRsvpUsers(ctx context.Context, eventID int64) ([]models.Use
 
 // ---- Chat ----
 
-func (s *Store) AddChatMessage(ctx context.Context, userID, mentorID int64, senderRole models.Role, body string, replyTo *int64, att *models.Attachment) (*models.ChatMessage, error) {
-	var attType, attURL, attName *string
-	var attSize *int64
-	if att != nil {
-		attType, attURL, attName = &att.Type, &att.URL, &att.Name
-		attSize = &att.Size
+func packChatAttachments(atts []models.Attachment) (typ, url, name *string, size *int64, raw []byte) {
+	if len(atts) == 0 {
+		return nil, nil, nil, nil, nil
+	}
+	first := atts[0]
+	typ = new(string)
+	*typ = first.Type
+	url = new(string)
+	*url = first.URL
+	name = new(string)
+	*name = first.Name
+	sz := first.Size
+	size = &sz
+	if len(atts) > 1 {
+		if b, err := json.Marshal(atts); err == nil {
+			raw = b
+		}
+	}
+	return
+}
+
+func (s *Store) AddChatMessage(ctx context.Context, userID, mentorID int64, senderRole models.Role, body string, replyTo *int64, atts []models.Attachment) (*models.ChatMessage, error) {
+	attType, attURL, attName, attSize, raw := packChatAttachments(atts)
+	var rawArg any
+	if len(raw) > 0 {
+		rawArg = string(raw)
 	}
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (user_id, mentor_id, sender_role, body, reply_to, attachment_type, attachment_url, attachment_name, attachment_size)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		INSERT INTO chat_messages (user_id, mentor_id, sender_role, body, reply_to, attachment_type, attachment_url, attachment_name, attachment_size, attachments)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
-		userID, mentorID, senderRole.String(), body, replyTo, attType, attURL, attName, attSize)
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`,
+		userID, mentorID, senderRole.String(), body, replyTo, attType, attURL, attName, attSize, rawArg)
 	return scanMessage(row)
 }
 
 // ImportChatMessage inserts a historical message (backup restore), preserving created_at / pin.
-func (s *Store) ImportChatMessage(ctx context.Context, userID, mentorID int64, senderRole models.Role, body string, att *models.Attachment, createdAt time.Time, pinned bool) (*models.ChatMessage, error) {
-	var attType, attURL, attName *string
-	var attSize *int64
-	if att != nil {
-		attType, attURL, attName = &att.Type, &att.URL, &att.Name
-		attSize = &att.Size
+func (s *Store) ImportChatMessage(ctx context.Context, userID, mentorID int64, senderRole models.Role, body string, atts []models.Attachment, createdAt time.Time, pinned bool) (*models.ChatMessage, error) {
+	attType, attURL, attName, attSize, raw := packChatAttachments(atts)
+	var rawArg any
+	if len(raw) > 0 {
+		rawArg = string(raw)
 	}
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -1105,11 +1336,11 @@ func (s *Store) ImportChatMessage(ctx context.Context, userID, mentorID int64, s
 		pinnedAt = &t
 	}
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (user_id, mentor_id, sender_role, body, attachment_type, attachment_url, attachment_name, attachment_size, created_at, pinned_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		INSERT INTO chat_messages (user_id, mentor_id, sender_role, body, attachment_type, attachment_url, attachment_name, attachment_size, attachments, created_at, pinned_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
-		userID, mentorID, senderRole.String(), body, attType, attURL, attName, attSize, createdAt, pinnedAt)
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`,
+		userID, mentorID, senderRole.String(), body, attType, attURL, attName, attSize, rawArg, createdAt, pinnedAt)
 	return scanMessage(row)
 }
 
@@ -1155,18 +1386,28 @@ func (s *Store) DeleteChatMessage(ctx context.Context, meID, partnerID, msgID in
 // ReplaceChatAttachment swaps the photo, video, or voice on one of my messages and marks it edited.
 // The new type must match the current attachment.
 func (s *Store) ReplaceChatAttachment(ctx context.Context, meID, partnerID, msgID int64, meRole models.Role, body, attType, attURL, attName string, attSize int64) (*models.ChatMessage, error) {
+	elem, err := json.Marshal(models.Attachment{Type: attType, URL: attURL, Name: attName, Size: attSize})
+	if err != nil {
+		return nil, err
+	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE chat_messages
 		SET body=$1, edited_at=now(),
-		    attachment_type=$2, attachment_url=$3, attachment_name=$4, attachment_size=$5
-		WHERE id=$6
-		  AND ((user_id=$7 AND mentor_id=$8) OR (user_id=$8 AND mentor_id=$7))
-		  AND sender_role=$9
-		  AND (user_id=$7 OR mentor_id=$7)
+		    attachment_type=$2, attachment_url=$3, attachment_name=$4, attachment_size=$5,
+		    attachments = CASE
+		        WHEN attachments IS NULL THEN attachments
+		        WHEN jsonb_typeof(attachments) <> 'array' THEN attachments
+		        WHEN jsonb_array_length(attachments) = 0 THEN attachments
+		        ELSE jsonb_set(attachments, '{0}', $6::jsonb, false)
+		    END
+		WHERE id=$7
+		  AND ((user_id=$8 AND mentor_id=$9) OR (user_id=$9 AND mentor_id=$8))
+		  AND sender_role=$10
+		  AND (user_id=$8 OR mentor_id=$8)
 		  AND attachment_type=$2
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
-		body, attType, attURL, attName, attSize, msgID, meID, partnerID, meRole.String())
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`,
+		body, attType, attURL, attName, attSize, string(elem), msgID, meID, partnerID, meRole.String())
 	m, err := scanMessage(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -1185,8 +1426,53 @@ func (s *Store) EditChatMessage(ctx context.Context, meID, partnerID, msgID int6
 		  AND (user_id=$3 OR mentor_id=$3)
 		  AND ($1 <> '' OR attachment_url IS NOT NULL)
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`,
 		body, msgID, meID, partnerID, meRole.String())
+	m, err := scanMessage(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return m, err
+}
+
+// GetOwnChatMessage loads one of my messages in this conversation, including its attachments.
+func (s *Store) GetOwnChatMessage(ctx context.Context, meID, partnerID, msgID int64, meRole models.Role) (*models.ChatMessage, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments
+		FROM chat_messages
+		WHERE id=$1
+		  AND ((user_id=$2 AND mentor_id=$3) OR (user_id=$3 AND mentor_id=$2))
+		  AND sender_role=$4
+		  AND (user_id=$2 OR mentor_id=$2)`,
+		msgID, meID, partnerID, meRole.String())
+	m, err := scanMessage(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return m, err
+}
+
+// SaveEditedChatMessage writes the caption and the full attachment set for one of my messages.
+// Callers pass the attachments that should remain; an empty list is stored as no attachment.
+func (s *Store) SaveEditedChatMessage(ctx context.Context, meID, partnerID, msgID int64, meRole models.Role, body string, atts []models.Attachment) (*models.ChatMessage, error) {
+	attType, attURL, attName, attSize, raw := packChatAttachments(atts)
+	var rawArg any
+	if len(raw) > 0 {
+		rawArg = string(raw)
+	}
+	row := s.pool.QueryRow(ctx, `
+		UPDATE chat_messages
+		SET body=$1, edited_at=now(),
+		    attachment_type=$2, attachment_url=$3, attachment_name=$4, attachment_size=$5,
+		    attachments=$6::jsonb
+		WHERE id=$7
+		  AND ((user_id=$8 AND mentor_id=$9) OR (user_id=$9 AND mentor_id=$8))
+		  AND sender_role=$10
+		  AND (user_id=$8 OR mentor_id=$8)
+		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`,
+		body, attType, attURL, attName, attSize, rawArg, msgID, meID, partnerID, meRole.String())
 	m, err := scanMessage(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -1216,7 +1502,7 @@ func (s *Store) TogglePinChatMessage(ctx context.Context, meID, partnerID, msgID
 		out := s.pool.QueryRow(ctx, `
 			UPDATE chat_messages SET pinned_at=NULL WHERE id=$1
 			RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-				attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`, msgID)
+				attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`, msgID)
 		return scanMessage(out)
 	}
 	var n int
@@ -1244,7 +1530,7 @@ func (s *Store) TogglePinChatMessage(ctx context.Context, meID, partnerID, msgID
 	out := s.pool.QueryRow(ctx, `
 		UPDATE chat_messages SET pinned_at=now() WHERE id=$1
 		RETURNING id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at`, msgID)
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments`, msgID)
 	return scanMessage(out)
 }
 
@@ -1252,7 +1538,7 @@ func (s *Store) TogglePinChatMessage(ctx context.Context, meID, partnerID, msgID
 func (s *Store) ListPinnedChatMessages(ctx context.Context, userID, mentorID int64) ([]models.ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments
 		FROM chat_messages
 		WHERE pinned_at IS NOT NULL
 		  AND ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
@@ -1278,7 +1564,7 @@ func (s *Store) ListPinnedChatMessages(ctx context.Context, userID, mentorID int
 func (s *Store) ListChatMessages(ctx context.Context, userID, mentorID, before, limit int64) ([]models.ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments
 		FROM chat_messages
 		WHERE ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
 		  AND ($3 = 0 OR id < $3)
@@ -1326,7 +1612,7 @@ func (s *Store) ListChatMessagesAround(ctx context.Context, userID, partnerID, a
 
 	older, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments
 		FROM chat_messages
 		WHERE ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
 		  AND id <= $3
@@ -1358,7 +1644,7 @@ func (s *Store) ListChatMessagesAround(ctx context.Context, userID, partnerID, a
 
 	newer, err := s.pool.Query(ctx, `
 		SELECT id, user_id, mentor_id, sender_role, body, read_at, created_at, reply_to,
-			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at
+			attachment_type, attachment_url, attachment_name, attachment_size, pinned_at, edited_at, buttons, attachments
 		FROM chat_messages
 		WHERE ((user_id=$1 AND mentor_id=$2) OR (user_id=$2 AND mentor_id=$1))
 		  AND id > $3
@@ -1399,14 +1685,27 @@ func scanMessage(row messageScanner) (*models.ChatMessage, error) {
 	var m models.ChatMessage
 	var attType, attURL, attName *string
 	var attSize *int64
+	var buttons []byte
+	var rawAtts []byte
 	if err := row.Scan(
 		&m.ID, &m.UserID, &m.MentorID, &m.SenderRole, &m.Body, &m.ReadAt, &m.CreatedAt, &m.ReplyTo,
-		&attType, &attURL, &attName, &attSize, &m.PinnedAt, &m.EditedAt,
+		&attType, &attURL, &attName, &attSize, &m.PinnedAt, &m.EditedAt, &buttons, &rawAtts,
 	); err != nil {
 		return nil, err
 	}
+	if len(buttons) > 0 && string(buttons) != "[]" && string(buttons) != "null" {
+		m.Buttons = buttons
+	}
 	m.Pinned = m.PinnedAt != nil
-	if attURL != nil && *attURL != "" {
+	if len(rawAtts) > 0 && string(rawAtts) != "null" && string(rawAtts) != "[]" {
+		var list []models.Attachment
+		if err := json.Unmarshal(rawAtts, &list); err == nil && len(list) > 0 {
+			m.Attachments = list
+			first := list[0]
+			m.Attachment = &first
+		}
+	}
+	if m.Attachment == nil && attURL != nil && *attURL != "" {
 		m.Attachment = &models.Attachment{
 			Type: derefStr(attType), URL: *attURL, Name: derefStr(attName), Size: derefInt(attSize),
 		}

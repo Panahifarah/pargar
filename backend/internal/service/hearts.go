@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"pargar/backend/internal/config"
@@ -9,19 +10,62 @@ import (
 	"pargar/backend/internal/store"
 )
 
-// HeartsService manages the fixed 3-heart pool and lockout.
-// Hearts do not regenerate over time — only a mentor/admin unlock restores them.
+// HeartsService manages a regenerating heart pool.
+// Reaching zero waits for the next heart unless an admin turns lock-on-empty on.
 type HeartsService struct {
 	store *store.Store
+}
+
+type HeartPolicy struct {
+	Max       int
+	Every     time.Duration
+	LockEmpty bool
 }
 
 func NewHeartsService(st *store.Store, _ *config.Config) *HeartsService {
 	return &HeartsService{store: st}
 }
 
-// RefreshHearts is a no-op kept for call-site compatibility.
-// The game has no timed heart refill; the stored count is authoritative.
-func (h *HeartsService) RefreshHearts(_ context.Context, u *models.User) (*models.User, error) {
+func (h *HeartsService) Policy(ctx context.Context) HeartPolicy {
+	p := HeartPolicy{Max: store.MaxHearts, Every: 4 * time.Hour, LockEmpty: false}
+	if v, err := h.store.GetSetting(ctx, "hearts_max"); err == nil {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n >= 1 && n <= store.MaxHearts {
+			p.Max = n
+		}
+	}
+	if v, err := h.store.GetSetting(ctx, "hearts_regen_minutes"); err == nil {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n >= 5 && n <= 24*60 {
+			p.Every = time.Duration(n) * time.Minute
+		}
+	}
+	if v, err := h.store.GetSetting(ctx, "hearts_lock_on_empty"); err == nil {
+		p.LockEmpty = v == "true" || v == "1"
+	}
+	return p
+}
+
+// RefreshHearts adds hearts that have come due since hearts_updated_at.
+func (h *HeartsService) RefreshHearts(ctx context.Context, u *models.User) (*models.User, error) {
+	if u == nil || u.Role.IsStaff() {
+		return u, nil
+	}
+	p := h.Policy(ctx)
+	if u.Hearts >= p.Max || u.HeartsUpdatedAt.IsZero() {
+		return u, nil
+	}
+	gain := int(time.Since(u.HeartsUpdatedAt) / p.Every)
+	if gain <= 0 {
+		return u, nil
+	}
+	next := u.Hearts + gain
+	if next > p.Max {
+		next = p.Max
+	}
+	if err := h.store.SetHearts(ctx, u.ID, next); err != nil {
+		return u, err
+	}
+	u.Hearts = next
+	u.HeartsUpdatedAt = time.Now()
 	return u, nil
 }
 
@@ -45,7 +89,7 @@ func (h *HeartsService) ConsumeHearts(ctx context.Context, u *models.User, loss 
 		return nil, 0, err
 	}
 	u.Hearts = cur
-	if cur == 0 && !u.IsLocked {
+	if cur == 0 && h.Policy(ctx).LockEmpty && !u.IsLocked {
 		locked, err := h.store.LockUser(ctx, u.ID)
 		if err != nil {
 			return nil, 0, err
